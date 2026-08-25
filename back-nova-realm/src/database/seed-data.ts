@@ -57,7 +57,7 @@ const pc = (
 ): ProductSeed => ({
   name,
   slug,
-  description: `${name} es un equipo equilibrado para jugar y crear, ensamblado con componentes estándar y datos de rendimiento demo mantenibles.`,
+  description: `${name} es un equipo equilibrado para jugar y crear, ensamblado con componentes estándar y datos de rendimiento mantenibles.`,
   price,
   stock,
   imageUrl,
@@ -76,7 +76,7 @@ const pc = (
     'SSD NVMe',
     'Wi-Fi y Bluetooth',
     'Windows 11 listo para configurar',
-    'Garantía demo de 12 meses',
+    'Garantía de 12 meses',
   ],
 });
 
@@ -95,10 +95,10 @@ const component = (
   stock,
   active: true,
   imageUrl: '/products/component.svg',
-  description: `${name}. Producto demo para el catálogo administrable de NovaRealm.`,
+  description: `${name}. Producto para el catálogo administrable de NovaRealm.`,
   cpuScore: type === 'CPU' ? score : undefined,
   gpuScore: type === 'GPU' ? score : undefined,
-  features: ['Precio demo en COP', 'Stock administrable'],
+  features: ['Precio en COP', 'Stock administrable'],
 });
 
 export const PRODUCT_SEEDS: ProductSeed[] = [

@@ -28,7 +28,7 @@ export function ProductDetail({ slug }: { slug: string }) {
         <div className="detail-info">
           <div className="stock-line"><span className={product.stock ? "stock-dot" : "stock-dot out"} />{product.stock ? `En stock · ${product.stock} unidades` : "Agotado"}</div>
           <h1>{product.name}</h1><p className="detail-description">{product.description}</p>
-          <div className="detail-price"><small>Precio demo</small><strong>{formatMoney(product.price)}</strong><span>IVA incluido · Envío calculado al comprar</span></div>
+          <div className="detail-price"><small>Precio</small><strong>{formatMoney(product.price)}</strong><span>IVA incluido · Envío calculado al comprar</span></div>
           {isPc && <div className="key-specs"><div><span>Procesador</span><strong>{product.cpu}</strong></div><div><span>Tarjeta gráfica</span><strong>{product.gpu}</strong></div><div><span>Memoria</span><strong>{product.ramGb} GB RAM</strong></div><div><span>Almacenamiento</span><strong>{product.storageGb} GB NVMe</strong></div></div>}
           <WhatsAppBuyButton className="button button-full" productName={product.name} price={product.price} />
           <Link className="button button-accent button-full" href={`/nova?q=${encodeURIComponent(`Quiero saber si el ${product.name} me sirve. Mi presupuesto máximo es ${product.price}.`)}`}><span>✦</span> Preguntarle a Nova sobre este equipo</Link>
@@ -36,7 +36,7 @@ export function ProductDetail({ slug }: { slug: string }) {
         </div>
       </section>
       {isPc && <section className="shell detail-lower">
-        <div className="detail-panel"><span className="eyebrow">CAPACIDAD RELATIVA DEMO</span><h2>Un vistazo a su equilibrio</h2><p>Indicadores internos de 0 a 100 usados por el algoritmo. No representan FPS ni benchmarks externos.</p><div className="indicator-list">{indicators.map(([label, score]) => <div key={label}><p><span>{label}</span><strong>{score ?? 0}%</strong></p><div><i style={{ width: `${score ?? 0}%` }} /></div></div>)}</div></div>
+        <div className="detail-panel"><span className="eyebrow">CAPACIDAD RELATIVA</span><h2>Un vistazo a su equilibrio</h2><p>Indicadores de 0 a 100 calculados a partir de las características del equipo.</p><div className="indicator-list">{indicators.map(([label, score]) => <div key={label}><p><span>{label}</span><strong>{score ?? 0}%</strong></p><div><i style={{ width: `${score ?? 0}%` }} /></div></div>)}</div></div>
         <div className="detail-panel"><span className="eyebrow">INCLUYE</span><h2>Listo para empezar</h2><ul className="feature-list">{product.features.map((feature) => <li key={feature}><span>✓</span>{feature}</li>)}<li><span>✓</span>{product.vramGb} GB de memoria de video</li><li><span>✓</span>Componentes y stock administrados desde NovaRealm</li></ul></div>
       </section>}
     </div>

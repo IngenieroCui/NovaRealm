@@ -16,7 +16,7 @@ export class AssistantService {
     const intent = await this.ai.interpret(
       input.message,
       input.conversation ?? [],
-      this.workloads.findAll(),
+      await this.workloads.findAll(),
       input.filters,
     );
     if (intent.needsMoreInformation || !intent.filters) {
@@ -30,7 +30,7 @@ export class AssistantService {
       };
     }
 
-    const result = this.recommendations.recommend(intent.filters);
+    const result = await this.recommendations.recommend(intent.filters);
     if (!result.recommendations.length) {
       return {
         message:
@@ -54,7 +54,7 @@ export class AssistantService {
   }
 
   async compare(input: CompareRequestDto) {
-    const result = this.recommendations.recommend(input.filters);
+    const result = await this.recommendations.recommend(input.filters);
     const selected = result.recommendations.filter((item) =>
       input.slugs.includes(item.product.slug),
     );

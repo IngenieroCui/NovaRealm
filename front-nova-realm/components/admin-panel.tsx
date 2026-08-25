@@ -242,10 +242,7 @@ export function AdminPanel() {
           <div className="nova-avatar">✦</div>
           <span className="eyebrow">ADMINISTRACIÓN</span>
           <h1>Gestiona NovaRealm</h1>
-          <p>
-            Usa la clave configurada como <code>ADMIN_API_KEY</code> en el
-            backend.
-          </p>
+          <p>Introduce la clave de administración para continuar.</p>
           <form onSubmit={login}>
             <label className="field">
               <span>Clave de administración</span>
@@ -265,10 +262,6 @@ export function AdminPanel() {
               {loading ? "Verificando…" : "Entrar"}
             </button>
           </form>
-          <small>
-            En desarrollo, si no configuras una clave, usa{" "}
-            <strong>novarealm-demo</strong>.
-          </small>
         </div>
       </section>
     );

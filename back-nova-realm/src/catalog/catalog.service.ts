@@ -11,7 +11,10 @@ import { Product, ProductRow, ProductType } from './product.types';
 export class CatalogService {
   constructor(private readonly database: DatabaseService) {}
 
-  findAll(query: ProductQueryDto = {}, includeInactive = false): Product[] {
+  async findAll(
+    query: ProductQueryDto = {},
+    includeInactive = false,
+  ): Promise<Product[]> {
     const conditions = includeInactive ? ['1 = 1'] : ['active = 1'];
     const params: (string | number)[] = [];
 
@@ -70,21 +73,21 @@ export class CatalogService {
         "CASE WHEN type = 'PREBUILT_PC' THEN 0 ELSE 1 END, price ASC",
     }[query.sort ?? ProductSort.FEATURED];
 
-    const rows = this.database.all<ProductRow>(
+    const rows = await this.database.all<ProductRow>(
       `SELECT * FROM products WHERE ${conditions.join(' AND ')} ORDER BY ${orderBy}`,
       ...params,
     );
     return rows.map((row) => this.mapProduct(row));
   }
 
-  findPrebuiltCandidates(budgetMax?: number): Product[] {
+  async findPrebuiltCandidates(budgetMax?: number): Promise<Product[]> {
     const query: ProductQueryDto = { type: ProductType.PREBUILT_PC };
     if (budgetMax !== undefined) query.maxPrice = budgetMax;
-    return this.findAll(query).filter((product) => product.stock > 0);
+    return (await this.findAll(query)).filter((product) => product.stock > 0);
   }
 
-  findBySlug(slug: string): Product {
-    const row = this.database.get<ProductRow>(
+  async findBySlug(slug: string): Promise<Product> {
+    const row = await this.database.get<ProductRow>(
       'SELECT * FROM products WHERE slug = ? AND active = 1',
       slug,
     );
@@ -92,12 +95,12 @@ export class CatalogService {
     return this.mapProduct(row);
   }
 
-  findBySlugs(slugs: string[]): Product[] {
-    return slugs.map((slug) => this.findBySlug(slug));
+  async findBySlugs(slugs: string[]): Promise<Product[]> {
+    return Promise.all(slugs.map((slug) => this.findBySlug(slug)));
   }
 
-  create(input: ProductWriteDto): Product {
-    const normalizedInput = this.completePrebuiltProfile(input);
+  async create(input: ProductWriteDto): Promise<Product> {
+    const normalizedInput = await this.completePrebuiltProfile(input);
     if (
       !normalizedInput.name ||
       !normalizedInput.slug ||
@@ -111,7 +114,7 @@ export class CatalogService {
     }
     this.ensurePrebuiltProfile(normalizedInput);
     try {
-      const result = this.database.run(
+      const result = await this.database.run(
         `INSERT INTO products (
           name, slug, description, price, stock, imageUrl, active, type, cpu, gpu,
           ramGb, storageGb, vramGb, cpuScore, gpuScore, productivityScore,
@@ -144,9 +147,9 @@ export class CatalogService {
     }
   }
 
-  update(id: number, input: ProductWriteDto): Product {
-    const current = this.findById(id);
-    const normalizedInput = this.completePrebuiltProfile(input, current);
+  async update(id: number, input: ProductWriteDto): Promise<Product> {
+    const current = await this.findById(id);
+    const normalizedInput = await this.completePrebuiltProfile(input, current);
     this.ensurePrebuiltProfile({ ...current, ...normalizedInput });
     const entries = Object.entries(normalizedInput).filter(
       ([, value]) => value !== undefined,
@@ -184,7 +187,7 @@ export class CatalogService {
     }
     columns.push('updatedAt = CURRENT_TIMESTAMP');
     try {
-      this.database.run(
+      await this.database.run(
         `UPDATE products SET ${columns.join(', ')} WHERE id = ?`,
         ...values,
         id,
@@ -197,8 +200,8 @@ export class CatalogService {
     }
   }
 
-  private findById(id: number): Product {
-    const row = this.database.get<ProductRow>(
+  private async findById(id: number): Promise<Product> {
+    const row = await this.database.get<ProductRow>(
       'SELECT * FROM products WHERE id = ?',
       id,
     );
@@ -219,10 +222,10 @@ export class CatalogService {
    * application. If its CPU/GPU already exists as a catalog component, reuse
    * that normalized score; otherwise the admin must provide one explicitly.
    */
-  private completePrebuiltProfile(
+  private async completePrebuiltProfile(
     input: ProductWriteDto,
     current?: Product,
-  ): ProductWriteDto {
+  ): Promise<ProductWriteDto> {
     const type = input.type ?? current?.type;
     if (type !== ProductType.PREBUILT_PC) return input;
 
@@ -230,14 +233,14 @@ export class CatalogService {
     const cpuChanged = input.cpu !== undefined && input.cpu !== current?.cpu;
     const gpuChanged = input.gpu !== undefined && input.gpu !== current?.gpu;
     if (completed.cpuScore === undefined && (cpuChanged || !current)) {
-      completed.cpuScore = this.findComponentScore(
+      completed.cpuScore = await this.findComponentScore(
         ProductType.CPU,
         completed.cpu ?? current?.cpu,
         'cpuScore',
       );
     }
     if (completed.gpuScore === undefined && (gpuChanged || !current)) {
-      completed.gpuScore = this.findComponentScore(
+      completed.gpuScore = await this.findComponentScore(
         ProductType.GPU,
         completed.gpu ?? current?.gpu,
         'gpuScore',
@@ -246,16 +249,17 @@ export class CatalogService {
     return completed;
   }
 
-  private findComponentScore(
+  private async findComponentScore(
     type: ProductType.CPU | ProductType.GPU,
     hardware: string | null | undefined,
     scoreField: 'cpuScore' | 'gpuScore',
   ) {
     if (!hardware) return undefined;
     const target = this.hardwareKey(hardware);
-    const components = this.database
-      .all<ProductRow>('SELECT * FROM products WHERE type = ?', type)
-      .map((row) => this.mapProduct(row));
+    const components = (await this.database.all<ProductRow>(
+      'SELECT * FROM products WHERE type = ?',
+      type,
+    )).map((row) => this.mapProduct(row));
     return (
       components.find((component) => {
         const componentHardware =

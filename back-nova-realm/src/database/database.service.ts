@@ -1,43 +1,61 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { DatabaseSync, SQLInputValue } from 'node:sqlite';
-import { dirname, resolve } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { createClient, type Client, type InValue } from '@libsql/client';
+import { Injectable, OnModuleInit } from '@nestjs/common';
+import { resolve } from 'node:path';
 import { PRODUCT_SEEDS, WORKLOAD_SEEDS } from './seed-data';
 
-@Injectable()
-export class DatabaseService implements OnModuleInit, OnModuleDestroy {
-  private database!: DatabaseSync;
+export interface RunResult {
+  lastInsertRowid?: bigint;
+  rowsAffected: number;
+}
 
-  onModuleInit() {
+@Injectable()
+export class DatabaseService implements OnModuleInit {
+  private database!: Client;
+
+  async onModuleInit() {
+    this.database = createClient({
+      url: this.databaseUrl,
+      ...(process.env.DATABASE_AUTH_TOKEN?.trim()
+        ? { authToken: process.env.DATABASE_AUTH_TOKEN.trim() }
+        : {}),
+    });
+    await this.createSchema();
+    await this.seed();
+  }
+
+  async all<T>(sql: string, ...params: InValue[]): Promise<T[]> {
+    const result = await this.database.execute({ sql, args: params });
+    return result.rows as unknown as T[];
+  }
+
+  async get<T>(sql: string, ...params: InValue[]): Promise<T | undefined> {
+    const result = await this.all<T>(sql, ...params);
+    return result[0];
+  }
+
+  async run(sql: string, ...params: InValue[]): Promise<RunResult> {
+    const result = await this.database.execute({ sql, args: params });
+    return {
+      lastInsertRowid: result.lastInsertRowid,
+      rowsAffected: result.rowsAffected,
+    };
+  }
+
+  private get databaseUrl() {
+    const configuredUrl = process.env.DATABASE_URL?.trim();
+    if (configuredUrl) return configuredUrl;
+    if (process.env.VERCEL) {
+      throw new Error('DATABASE_URL es obligatoria al desplegar en Vercel.');
+    }
     const databasePath = resolve(
       process.cwd(),
       process.env.DATABASE_PATH ?? './data/novarealm.db',
     );
-    mkdirSync(dirname(databasePath), { recursive: true });
-    this.database = new DatabaseSync(databasePath);
-    this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
-    this.createSchema();
-    this.seed();
+    return `file:${databasePath.replace(/\\/g, '/')}`;
   }
 
-  onModuleDestroy() {
-    this.database?.close();
-  }
-
-  all<T>(sql: string, ...params: SQLInputValue[]): T[] {
-    return this.database.prepare(sql).all(...params) as T[];
-  }
-
-  get<T>(sql: string, ...params: SQLInputValue[]): T | undefined {
-    return this.database.prepare(sql).get(...params) as T | undefined;
-  }
-
-  run(sql: string, ...params: SQLInputValue[]) {
-    return this.database.prepare(sql).run(...params);
-  }
-
-  private createSchema() {
-    this.database.exec(`
+  private async createSchema() {
+    await this.database.executeMultiple(`
       CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -87,20 +105,18 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     `);
   }
 
-  private seed() {
-    const productCount = this.get<{ count: number }>(
+  private async seed() {
+    const productCount = await this.get<{ count: number }>(
       'SELECT COUNT(*) AS count FROM products',
-    )?.count;
-    if (!productCount) {
-      const insert = this.database.prepare(`
-        INSERT INTO products (
-          name, slug, description, price, stock, imageUrl, active, type,
-          cpu, gpu, ramGb, storageGb, vramGb, cpuScore, gpuScore,
-          productivityScore, upgradeabilityScore, features
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+    );
+    if (!productCount?.count) {
       for (const product of PRODUCT_SEEDS) {
-        insert.run(
+        await this.run(
+          `INSERT INTO products (
+            name, slug, description, price, stock, imageUrl, active, type,
+            cpu, gpu, ramGb, storageGb, vramGb, cpuScore, gpuScore,
+            productivityScore, upgradeabilityScore, features
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           product.name,
           product.slug,
           product.description,
@@ -123,18 +139,14 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    // Inserta nuevos perfiles en instalaciones existentes sin sobrescribir
-    // ajustes hechos desde el panel de administración.
-    const insert = this.database.prepare(`
-      INSERT OR IGNORE INTO workloads (
-        slug, name, type, description, cpuWeight, gpuWeight, ramWeight,
-        storageWeight, vramWeight, minimumCpuScore, recommendedCpuScore,
-        minimumGpuScore, recommendedGpuScore, minimumRamGb,
-        recommendedRamGb, minimumVramGb, recommendedVramGb
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
     for (const workload of WORKLOAD_SEEDS) {
-      insert.run(
+      await this.run(
+        `INSERT OR IGNORE INTO workloads (
+          slug, name, type, description, cpuWeight, gpuWeight, ramWeight,
+          storageWeight, vramWeight, minimumCpuScore, recommendedCpuScore,
+          minimumGpuScore, recommendedGpuScore, minimumRamGb,
+          recommendedRamGb, minimumVramGb, recommendedVramGb
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         workload.slug,
         workload.name,
         workload.type,

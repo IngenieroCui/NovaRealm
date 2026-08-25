@@ -13,9 +13,7 @@ export class AdminGuard implements CanActivate {
     const expected = process.env.ADMIN_API_KEY?.trim();
     const provided = request.header('x-admin-key');
     if (!expected) {
-      throw new UnauthorizedException(
-        'La administración no está configurada. Define ADMIN_API_KEY en el backend.',
-      );
+      throw new UnauthorizedException('Acceso de administración no disponible.');
     }
     if (!provided || provided !== expected) {
       throw new UnauthorizedException('Clave de administración inválida');

@@ -11,14 +11,14 @@ import { Workload } from './workload.types';
 export class WorkloadsService {
   constructor(private readonly database: DatabaseService) {}
 
-  findAll(): Workload[] {
+  async findAll(): Promise<Workload[]> {
     return this.database.all<Workload>(
       'SELECT * FROM workloads ORDER BY type, name COLLATE NOCASE',
     );
   }
 
-  findBySlug(slug: string): Workload {
-    const workload = this.database.get<Workload>(
+  async findBySlug(slug: string): Promise<Workload> {
+    const workload = await this.database.get<Workload>(
       'SELECT * FROM workloads WHERE slug = ?',
       slug,
     );
@@ -27,11 +27,11 @@ export class WorkloadsService {
     return workload;
   }
 
-  findBySlugs(slugs: string[]): Workload[] {
-    return slugs.map((slug) => this.findBySlug(slug));
+  async findBySlugs(slugs: string[]): Promise<Workload[]> {
+    return Promise.all(slugs.map((slug) => this.findBySlug(slug)));
   }
 
-  create(input: WorkloadWriteDto): Workload {
+  async create(input: WorkloadWriteDto): Promise<Workload> {
     const required = [
       'slug',
       'name',
@@ -54,11 +54,11 @@ export class WorkloadsService {
     if (required.some((field) => input[field] === undefined)) {
       throw new BadRequestException('Faltan campos obligatorios del workload');
     }
-    this.ensureWeights(input);
-    this.ensureRequirements(input);
+    await this.ensureWeights(input);
+    await this.ensureRequirements(input);
     try {
       const values = required.map((field) => input[field] as string | number);
-      const result = this.database.run(
+      const result = await this.database.run(
         `INSERT INTO workloads (${required.join(', ')}) VALUES (${required.map(() => '?').join(', ')})`,
         ...values,
       );
@@ -70,14 +70,14 @@ export class WorkloadsService {
     }
   }
 
-  update(id: number, input: WorkloadWriteDto): Workload {
-    this.findById(id);
-    this.ensureWeights(input, id);
-    this.ensureRequirements(input, id);
+  async update(id: number, input: WorkloadWriteDto): Promise<Workload> {
+    await this.findById(id);
+    await this.ensureWeights(input, id);
+    await this.ensureRequirements(input, id);
     const allowed = Object.keys(input);
     if (!allowed.length) return this.findById(id);
     try {
-      this.database.run(
+      await this.database.run(
         `UPDATE workloads SET ${allowed.map((key) => `${key} = ?`).join(', ')}, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`,
         ...allowed.map(
           (key) => input[key as keyof WorkloadWriteDto] as string | number,
@@ -92,8 +92,8 @@ export class WorkloadsService {
     }
   }
 
-  private findById(id: number): Workload {
-    const workload = this.database.get<Workload>(
+  private async findById(id: number): Promise<Workload> {
+    const workload = await this.database.get<Workload>(
       'SELECT * FROM workloads WHERE id = ?',
       id,
     );
@@ -101,8 +101,8 @@ export class WorkloadsService {
     return workload;
   }
 
-  private ensureWeights(input: WorkloadWriteDto, id?: number) {
-    const current = id ? this.findById(id) : undefined;
+  private async ensureWeights(input: WorkloadWriteDto, id?: number) {
+    const current = id ? await this.findById(id) : undefined;
     const sum =
       (input.cpuWeight ?? current?.cpuWeight ?? 0) +
       (input.gpuWeight ?? current?.gpuWeight ?? 0) +
@@ -116,8 +116,8 @@ export class WorkloadsService {
     }
   }
 
-  private ensureRequirements(input: WorkloadWriteDto, id?: number) {
-    const current = id ? this.findById(id) : undefined;
+  private async ensureRequirements(input: WorkloadWriteDto, id?: number) {
+    const current = id ? await this.findById(id) : undefined;
     const pairs: Array<[number, number, string]> = [
       [
         input.minimumCpuScore ?? current?.minimumCpuScore ?? 0,

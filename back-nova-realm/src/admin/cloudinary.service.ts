@@ -19,7 +19,7 @@ export class CloudinaryService {
 
     if (!cloudName || !apiKey || !apiSecret) {
       throw new ServiceUnavailableException(
-        'Cloudinary no está configurado. Define CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY y CLOUDINARY_API_SECRET en el backend.',
+        'El servicio de imágenes no está disponible en este momento.',
       );
     }
 

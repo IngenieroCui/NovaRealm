@@ -29,17 +29,17 @@ export class RecommendationsService {
     private readonly workloads: WorkloadsService,
   ) {}
 
-  recommend(input: RecommendationRequestDto) {
-    const workloadEntities = this.workloads.findBySlugs(
+  async recommend(input: RecommendationRequestDto) {
+    const workloadEntities = await this.workloads.findBySlugs(
       input.workloads.map((item) => item.slug),
     );
     const importanceTotal = input.workloads.reduce(
       (sum, item) => sum + item.importance,
       0,
     );
-    const candidates = this.catalog
-      .findPrebuiltCandidates(input.budgetMax)
-      .filter((product) => this.meetsMinimums(product, workloadEntities));
+    const candidates = (await this.catalog.findPrebuiltCandidates(
+      input.budgetMax,
+    )).filter((product) => this.meetsMinimums(product, workloadEntities));
 
     const drafts = candidates.map((product) => {
       const workloadScores = workloadEntities.map((workload) =>
@@ -103,7 +103,6 @@ export class RecommendationsService {
       totalCandidates: candidates.length,
       recommendations,
       scoring: {
-        version: 'mvp-1',
         description:
           'Fórmula determinista basada en rendimiento por workload, presupuesto, capacidad de actualización y valor.',
         weights: input.preferences?.futureUpgrade

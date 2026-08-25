@@ -7,7 +7,7 @@ const officeWorkload = {
 } as Workload;
 
 describe('AiService', () => {
-  const service = new AiService();
+  const service = new AiService({} as any, {} as any);
 
   it('prioriza ofimática cuando el usuario menciona Excel y Word', () => {
     const intent: InterpretedIntent = {

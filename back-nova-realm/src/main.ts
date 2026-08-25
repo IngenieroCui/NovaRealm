@@ -1,8 +1,8 @@
-import { ValidationPipe } from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 
-async function bootstrap() {
+export async function createApp(): Promise<INestApplication> {
   const app = await NestFactory.create(AppModule);
   app.setGlobalPrefix('api');
   app.useGlobalPipes(
@@ -20,9 +20,16 @@ async function bootstrap() {
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'x-admin-key'],
   });
+  return app;
+}
 
+async function bootstrap() {
+  const app = await createApp();
   const port = Number(process.env.PORT ?? 3001);
   await app.listen(port);
-  console.log(`NovaRealm API disponible en http://localhost:${port}/api`);
+  console.log(`NovaRealm API iniciada en el puerto ${port}`);
 }
-void bootstrap();
+
+if (require.main === module) {
+  void bootstrap();
+}

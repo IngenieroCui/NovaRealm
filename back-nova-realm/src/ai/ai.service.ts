@@ -2,15 +2,9 @@ import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { RecommendationRequestDto } from '../recommendations/recommendation.dto';
 import { ScoredRecommendation } from '../recommendations/recommendation.types';
 import { Workload } from '../workloads/workload.types';
-
-interface OllamaMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
-
-interface OllamaResponse {
-  message?: { content?: string };
-}
+import { AiMessage, AiProvider } from './ai.provider';
+import { CloudflareAiProvider } from './cloudflare-ai.provider';
+import { OllamaAiProvider } from './ollama-ai.provider';
 
 export interface InterpretedIntent {
   needsMoreInformation: boolean;
@@ -29,20 +23,14 @@ const BUDGET_EVIDENCE =
 
 @Injectable()
 export class AiService {
-  private get baseUrl() {
-    return (process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434').replace(
-      /\/$/,
-      '',
-    );
-  }
-
-  private get model() {
-    return process.env.OLLAMA_MODEL ?? 'qwen3.5:4b';
-  }
+  constructor(
+    private readonly ollama: OllamaAiProvider,
+    private readonly cloudflare: CloudflareAiProvider,
+  ) {}
 
   async interpret(
     message: string,
-    conversation: OllamaMessage[],
+    conversation: AiMessage[],
     workloads: Workload[],
     currentFilters?: RecommendationRequestDto,
   ): Promise<InterpretedIntent> {
@@ -166,41 +154,15 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
     ]);
   }
 
-  private async call(messages: OllamaMessage[], json = false) {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      Number(process.env.OLLAMA_TIMEOUT_MS ?? 45000),
-    );
-    try {
-      const response = await fetch(`${this.baseUrl}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.model,
-          messages,
-          stream: false,
-          // Nova necesita respuestas breves y estructuradas; el razonamiento
-          // interno de Qwen solo añade latencia y puede agotar el timeout.
-          think: false,
-          ...(json ? { format: 'json' } : {}),
-          options: { temperature: json ? 0.1 : 0.35 },
-        }),
-        signal: controller.signal,
-      });
-      if (!response.ok)
-        throw new Error(`Ollama respondió HTTP ${response.status}`);
-      const data = (await response.json()) as OllamaResponse;
-      const content = data.message?.content?.trim();
-      if (!content) throw new Error('Ollama devolvió una respuesta vacía');
-      return content;
-    } catch (error) {
-      throw new ServiceUnavailableException(
-        `Nova no está disponible en este momento. Verifica que Ollama esté encendido y que el modelo ${this.model} esté instalado. (${(error as Error).message})`,
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
+  private async call(messages: AiMessage[], json = false) {
+    return this.provider.complete(messages, json);
+  }
+
+  private get provider(): AiProvider {
+    const provider = (process.env.AI_PROVIDER ?? 'ollama').trim().toLowerCase();
+    if (provider === 'cloudflare') return this.cloudflare;
+    if (provider === 'ollama') return this.ollama;
+    throw new ServiceUnavailableException('Nova no está disponible en este momento.');
   }
 
   private parseJson(content: string): unknown {
@@ -211,7 +173,7 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
       return JSON.parse(cleaned);
     } catch {
       throw new ServiceUnavailableException(
-        'Nova recibió una respuesta inválida del modelo local. Intenta reformular tu mensaje.',
+        'Nova no pudo procesar la solicitud. Intenta reformular tu mensaje.',
       );
     }
   }
@@ -293,7 +255,7 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
 
   /**
    * Excel, Word y la ofimática no requieren el perfil de programación.
-   * Este ajuste determinista evita que una inferencia errónea del modelo local
+   * Este ajuste determinista evita que una inferencia errónea del proveedor de IA
    * cambie una necesidad explícita por un workload más exigente.
    */
   private applyExplicitOfficeIntent(
@@ -301,7 +263,7 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
     intent: InterpretedIntent,
     currentFilters: RecommendationRequestDto | undefined,
     workloads: Workload[],
-    conversation: OllamaMessage[],
+    conversation: AiMessage[],
   ): InterpretedIntent {
     const normalizedMessage = message
       .normalize('NFD')

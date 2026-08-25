@@ -2,10 +2,10 @@ import { BadRequestException } from '@nestjs/common';
 import { WorkloadsService } from './workloads.service';
 
 describe('WorkloadsService', () => {
-  it('rejects a workload whose recommended requirement is below its minimum', () => {
+  it('rejects a workload whose recommended requirement is below its minimum', async () => {
     const service = new WorkloadsService({} as any);
 
-    expect(() =>
+    await expect(
       service.create({
         slug: 'perfil-invalido',
         name: 'Perfil inválido',
@@ -25,6 +25,6 @@ describe('WorkloadsService', () => {
         minimumVramGb: 2,
         recommendedVramGb: 4,
       }),
-    ).toThrow(BadRequestException);
+    ).rejects.toThrow(BadRequestException);
   });
 });

@@ -21,7 +21,7 @@ export default function Home() {
           </div>
           <div className="steps-grid">
             <article><span className="step-number">01</span><div className="step-icon">⌁</div><h3>Cuéntanos tu idea</h3><p>Juegos, programas, resolución y presupuesto. Escríbelo como se lo contarías a alguien.</p></article>
-            <article><span className="step-number">02</span><div className="step-icon">✦</div><h3>Nova entiende y compara</h3><p>La IA local estructura tu necesidad y nuestro algoritmo evalúa todos los equipos compatibles.</p></article>
+            <article><span className="step-number">02</span><div className="step-icon">✦</div><h3>Nova entiende y compara</h3><p>Nova estructura tu necesidad y nuestro algoritmo evalúa todos los equipos compatibles.</p></article>
             <article><span className="step-number">03</span><div className="step-icon">◫</div><h3>Elige con claridad</h3><p>Recibe varias alternativas, porcentajes verificables y diferencias explicadas sin jerga.</p></article>
           </div>
         </div>

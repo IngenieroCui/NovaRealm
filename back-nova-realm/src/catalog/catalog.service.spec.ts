@@ -3,11 +3,14 @@ import { CatalogService } from './catalog.service';
 import { ProductType } from './product.types';
 
 describe('CatalogService', () => {
-  it('rejects a prebuilt PC without the scores required for recommendations', () => {
-    const database = { all: jest.fn().mockReturnValue([]), run: jest.fn() };
+  it('rejects a prebuilt PC without the scores required for recommendations', async () => {
+    const database = {
+      all: jest.fn().mockResolvedValue([]),
+      run: jest.fn(),
+    };
     const service = new CatalogService(database as any);
 
-    expect(() =>
+    await expect(
       service.create({
         name: 'PC incompleto',
         slug: 'pc-incompleto',
@@ -21,13 +24,13 @@ describe('CatalogService', () => {
         vramGb: 8,
         upgradeabilityScore: 60,
       }),
-    ).toThrow(BadRequestException);
+    ).rejects.toThrow(BadRequestException);
     expect(database.run).not.toHaveBeenCalled();
   });
 
-  it('reuses component scores when creating a PC with matching hardware', () => {
+  it('reuses component scores when creating a PC with matching hardware', async () => {
     const database = {
-      all: jest.fn((_: string, type: ProductType) => [
+      all: jest.fn(async (_: string, type: ProductType) => [
         type === ProductType.CPU
           ? {
               type,
@@ -47,7 +50,7 @@ describe('CatalogService', () => {
     };
     const service = new CatalogService(database as any);
 
-    const profile = (service as any).completePrebuiltProfile({
+    const profile = await (service as any).completePrebuiltProfile({
       type: ProductType.PREBUILT_PC,
       cpu: 'AMD Ryzen 5 7600',
       gpu: 'GeForce RTX 4060',
