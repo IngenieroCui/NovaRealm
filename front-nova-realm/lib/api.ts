@@ -1,9 +1,12 @@
 const configuredApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
-
-export const API_URL = (configuredApiUrl || "http://localhost:3001/api").replace(
-  /\/$/,
+const apiBaseUrl = (configuredApiUrl || "http://localhost:3001/api").replace(
+  /\/+$/,
   "",
 );
+
+export const API_URL = apiBaseUrl.endsWith("/api")
+  ? apiBaseUrl
+  : `${apiBaseUrl}/api`;
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {

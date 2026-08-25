@@ -12,7 +12,14 @@ async function getApp() {
   return appPromise;
 }
 
+function removeVercelPathParam(request: Request) {
+  if (request.query && 'path' in request.query) {
+    delete (request.query as Record<string, unknown>).path;
+  }
+}
+
 export default async function handler(request: Request, response: Response) {
+  removeVercelPathParam(request);
   const app = await getApp();
   return app.getHttpAdapter().getInstance()(request, response);
 }
