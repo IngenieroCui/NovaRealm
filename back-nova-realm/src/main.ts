@@ -2,11 +2,11 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 
-export function normalizeOrigin(origin: string) {
+function normalizeOrigin(origin: string) {
   return origin.trim().replace(/\/$/, '');
 }
 
-export function isAllowedOrigin(origin: string | undefined, configuredOrigins: string[]) {
+function isAllowedOrigin(origin: string | undefined, configuredOrigins: string[]) {
   if (!origin) return true;
   const normalized = normalizeOrigin(origin);
   const configured = configuredOrigins.map(normalizeOrigin).filter(Boolean);
