@@ -46,4 +46,8 @@ export const PRODUCT_TYPE_LABELS: Record<string, string> = {
   PSU: "Fuentes",
   CASE: "Chasis",
   COOLING: "Refrigeración",
+  MONITOR: "Monitores",
+  KEYBOARD: "Teclados",
+  MOUSE: "Mouse",
+  HEADSET: "Headsets",
 };

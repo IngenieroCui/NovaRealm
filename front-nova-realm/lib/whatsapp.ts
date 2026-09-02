@@ -6,9 +6,18 @@ export interface WhatsAppPurchaseDetails {
   price?: number;
   priceLabel?: string;
   fitScore?: number;
+  buildLines?: string[];
+  assembly?: boolean;
 }
 
-export function buildPurchaseMessage({ productName, price, priceLabel, fitScore }: WhatsAppPurchaseDetails) {
+export function buildPurchaseMessage({ productName, price, priceLabel, fitScore, buildLines, assembly }: WhatsAppPurchaseDetails) {
+  if (buildLines?.length) {
+    const lines = ["Hola, armé esta configuración en NovaRealm:", "", ...buildLines];
+    if (assembly !== undefined) lines.push("", `Ensamble: ${assembly ? "Sí" : "No"}`);
+    if (price !== undefined || priceLabel) lines.push(`Total mostrado: ${priceLabel ?? formatMoney(price as number)}.`);
+    lines.push("", "Quisiera confirmar disponibilidad y compra.");
+    return lines.join("\n");
+  }
   const lines = [`Hola, quiero comprar el equipo ${productName}.`];
 
   if (price !== undefined || priceLabel) {

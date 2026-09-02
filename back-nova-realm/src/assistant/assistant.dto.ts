@@ -11,6 +11,14 @@ import {
 } from 'class-validator';
 import { RecommendationRequestDto } from '../recommendations/recommendation.dto';
 
+export enum ShoppingIntent {
+  PREBUILT_PC = 'PREBUILT_PC',
+  CUSTOM_PC = 'CUSTOM_PC',
+  UPGRADE_PC = 'UPGRADE_PC',
+  COMPONENT = 'COMPONENT',
+  PC_WITH_PERIPHERALS = 'PC_WITH_PERIPHERALS',
+}
+
 export class ConversationMessageDto {
   @IsIn(['user', 'assistant'])
   role!: 'user' | 'assistant';
@@ -18,6 +26,14 @@ export class ConversationMessageDto {
   @IsString()
   @MaxLength(2000)
   content!: string;
+}
+
+export class AssistantContextDto {
+  @IsOptional() @IsString() @MaxLength(80) page?: string;
+  @IsOptional() @IsString() @MaxLength(120) productSlug?: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(12) @IsString({ each: true }) buildSlugs?: string[];
+  @IsOptional() @IsIn(Object.values(ShoppingIntent)) shoppingIntent?: ShoppingIntent;
+  @IsOptional() @IsString() @MaxLength(120) selectedComponentType?: string;
 }
 
 export class ChatRequestDto {
@@ -36,6 +52,15 @@ export class ChatRequestDto {
   @ValidateNested()
   @Type(() => RecommendationRequestDto)
   filters?: RecommendationRequestDto;
+
+  @IsOptional()
+  @IsIn(Object.values(ShoppingIntent))
+  shoppingIntent?: ShoppingIntent;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => AssistantContextDto)
+  context?: AssistantContextDto;
 }
 
 export class CompareRequestDto {

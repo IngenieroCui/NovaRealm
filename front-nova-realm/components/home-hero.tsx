@@ -4,6 +4,8 @@ import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import type { Recommendation } from "@/lib/types";
+import { useNova } from "@/lib/nova-context";
+import type { ShoppingIntent } from "@/lib/types";
 
 const examples = [
   "Warzone a 1440p y Blender, máximo $5.000.000",
@@ -13,6 +15,7 @@ const examples = [
 
 export function HomeHero() {
   const router = useRouter();
+  const { openNova } = useNova();
   const [query, setQuery] = useState("");
   const [preview, setPreview] = useState<Recommendation | null>(null);
 
@@ -38,6 +41,14 @@ export function HomeHero() {
     router.push(`/nova?q=${encodeURIComponent(query.trim())}`);
   }
 
+  const intents: Array<{ icon: string; label: string; intent: ShoppingIntent }> = [
+    { icon: "🖥️", label: "Quiero un PC completo", intent: "PREBUILT_PC" },
+    { icon: "🧩", label: "Quiero armar mi PC", intent: "CUSTOM_PC" },
+    { icon: "🔧", label: "Quiero mejorar mi PC", intent: "UPGRADE_PC" },
+    { icon: "🎮", label: "Busco un componente", intent: "COMPONENT" },
+    { icon: "⌨️", label: "Quiero PC + periféricos", intent: "PC_WITH_PERIPHERALS" },
+  ];
+
   return (
     <section className="hero">
       <div className="hero-grid shell">
@@ -52,6 +63,7 @@ export function HomeHero() {
             Cuéntale a Nova qué quieres jugar, qué programas utilizas y cuánto
             quieres gastar. Nosotros hacemos el resto.
           </p>
+          <div className="intent-picker"><span className="intent-question">¿Qué estás buscando hoy?</span><div className="intent-grid">{intents.map((item) => <button key={item.intent} type="button" onClick={() => openNova(item.intent)}><span>{item.icon}</span>{item.label}<b>→</b></button>)}</div></div>
           <form
             className="nova-prompt"
             action="/nova"
@@ -66,7 +78,7 @@ export function HomeHero() {
               maxLength={2000}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Ej: Quiero jugar Warzone a 1440p y también uso Blender. Mi presupuesto es de 5 millones..."
+              placeholder="Ej: Quiero armar mi computador por partes; Tengo mi computador y quiero mejorar los componentes..."
             />
             <div className="prompt-footer">
               <span>

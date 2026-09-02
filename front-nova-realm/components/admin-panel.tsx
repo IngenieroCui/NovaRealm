@@ -14,6 +14,10 @@ const productTypes: ProductType[] = [
   "PSU",
   "CASE",
   "COOLING",
+  "MONITOR",
+  "KEYBOARD",
+  "MOUSE",
+  "HEADSET",
 ];
 type StockFilter = "all" | "available" | "sold-out";
 type StatusFilter = "all" | "active" | "inactive";
@@ -209,6 +213,8 @@ export function AdminPanel() {
   const [tab, setTab] = useState<"products" | "workloads">("products");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [assembly, setAssembly] = useState({ assemblyEnabled: true, assemblyPrice: 150000 });
+  const [savingAssembly, setSavingAssembly] = useState(false);
 
   async function load(key: string) {
     setLoading(true);
@@ -221,6 +227,7 @@ export function AdminPanel() {
       ]);
       setProducts(productData);
       setWorkloads(workloadData);
+      setAssembly(await apiFetch<typeof assembly>("/builder/settings"));
       setAdminKey(key);
     } catch (reason) {
       setError((reason as Error).message);
@@ -296,6 +303,7 @@ export function AdminPanel() {
             Workloads <span>{workloads.length}</span>
           </button>
         </div>
+        <div className="assembly-admin"><div><span className="eyebrow">SERVICIO COMERCIAL</span><h2>Servicio de ensamble</h2><p>Este precio lo calcula el backend y se muestra en el resumen de la build.</p></div><label className="switch"><input type="checkbox" checked={assembly.assemblyEnabled} onChange={(event) => setAssembly((value) => ({ ...value, assemblyEnabled: event.target.checked }))} /><span /></label><input type="number" min="0" value={assembly.assemblyPrice} onChange={(event) => setAssembly((value) => ({ ...value, assemblyPrice: Number(event.target.value) }))} /><button className="save-button" disabled={savingAssembly} onClick={async () => { setSavingAssembly(true); try { setAssembly(await apiFetch<typeof assembly>("/builder/settings", { method: "PATCH", headers: { "x-admin-key": adminKey }, body: JSON.stringify(assembly) })); } catch (reason) { setError((reason as Error).message); } finally { setSavingAssembly(false); } }}>{savingAssembly ? "…" : "Guardar"}</button></div>
         {error && <p className="form-error">{error}</p>}
         {tab === "products" ? (
           <ProductsAdmin
@@ -393,6 +401,12 @@ function ProductsAdmin({
       ?.split(",")
       .map((item) => item.trim())
       .filter(Boolean);
+    let technicalSpecs: Record<string, string | number | boolean> | undefined;
+    const technicalSpecsText = optionalText(data, "technicalSpecs");
+    if (technicalSpecsText) {
+      try { technicalSpecs = JSON.parse(technicalSpecsText) as Record<string, string | number | boolean>; }
+      catch { onError("Atributos técnicos debe ser un JSON válido."); return; }
+    }
     let imageUrl = optionalText(data, "imageUrl");
     try {
       if (imageFile) {
@@ -418,6 +432,7 @@ function ProductsAdmin({
           ? "/products/pc-cyan.svg"
           : "/products/component.svg"),
       ...(features?.length ? { features } : {}),
+      ...(technicalSpecs ? { technicalSpecs } : {}),
     };
     const specifications =
       type === "PREBUILT_PC"
@@ -554,6 +569,7 @@ function ProductsAdmin({
               <span>Descripción</span>
               <textarea name="description" required />
             </label>
+            <label className="field full"><span>Atributos técnicos (JSON opcional)</span><input name="technicalSpecs" placeholder={'{"socket":"AM5","memoryType":"DDR5","wattage":750}'} /><small>Úsalo para compatibilidad: socket, memoryType, wattage o datos del periférico.</small></label>
           </div>
           <button className="button button-dark" disabled={uploadingImage}>
             {uploadingImage ? "Subiendo imagen…" : "Crear en catálogo"}

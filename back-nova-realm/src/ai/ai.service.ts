@@ -5,14 +5,16 @@ import { Workload } from '../workloads/workload.types';
 import { AiMessage, AiProvider } from './ai.provider';
 import { CloudflareAiProvider } from './cloudflare-ai.provider';
 import { OllamaAiProvider } from './ollama-ai.provider';
+import { ShoppingIntent } from '../assistant/assistant.dto';
 
 export interface InterpretedIntent {
   needsMoreInformation: boolean;
   question?: string;
   filters?: RecommendationRequestDto;
+  shoppingIntent?: ShoppingIntent;
 }
 
-const NOVA_PERSONALITY = `Eres Nova, asesora tecnológica de NovaRealm. Habla español natural, sencillo y cercano. No eres agresiva vendiendo y no recomiendas necesariamente lo más caro. Nunca inventes productos, precios, stock, características, benchmarks, porcentajes ni rendimiento. Utiliza exclusivamente los datos entregados por el backend. Explica tecnología para una persona no técnica y evita interrogatorios.`;
+const NOVA_PERSONALITY = `Eres Nova, asesora tecnológica de NovaRealm. Hablas como una persona real dentro de un chat web: frases cortas, natural, cercana y clara. Responde normalmente en 1 a 3 párrafos breves. Sé técnica solo cuando haga falta, evita lenguaje corporativo, ensayos, listas gigantes y emojis excesivos. Ayuda a decidir; no vendas agresivamente ni recomiendes siempre lo más caro. Haz pocas preguntas y solo si la respuesta cambia mucho la recomendación. Nunca inventes productos, precios, stock, compatibilidad, benchmarks, fitScore ni totales. Usa únicamente datos verificados del backend y no afirmes que una acción ocurrió si el sistema no la confirmó. Si la interfaz ya muestra cards, resume y ayuda a elegir sin repetir todos sus números.`;
 
 const OFFICE_KEYWORDS =
   /\b(excel|word|powerpoint|office|ofimatica|hojas? de calculo|presentaciones?|tareas? basicas?)\b/i;
@@ -48,6 +50,7 @@ ${workloadCatalog}
 Devuelve únicamente JSON con esta forma:
 {
   "needsMoreInformation": false,
+  "shoppingIntent": "PREBUILT_PC|CUSTOM_PC|UPGRADE_PC|COMPONENT|PC_WITH_PERIPHERALS",
   "question": null,
   "filters": {
     "budgetMax": 5000000,
@@ -159,7 +162,7 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
   }
 
   private get provider(): AiProvider {
-    const provider = (process.env.AI_PROVIDER ?? 'ollama').trim().toLowerCase();
+    const provider = (process.env.AI_PROVIDER ?? (process.env.VERCEL ? 'cloudflare' : 'ollama')).trim().toLowerCase();
     if (provider === 'cloudflare') return this.cloudflare;
     if (provider === 'ollama') return this.ollama;
     throw new ServiceUnavailableException('Nova no está disponible en este momento.');
@@ -250,6 +253,9 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
               ? '¿Cuál es tu presupuesto máximo aproximado?'
               : undefined,
       filters,
+      shoppingIntent: Object.values(ShoppingIntent).includes(data.shoppingIntent as ShoppingIntent)
+        ? (data.shoppingIntent as ShoppingIntent)
+        : undefined,
     };
   }
 

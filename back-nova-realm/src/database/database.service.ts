@@ -76,6 +76,7 @@ export class DatabaseService implements OnModuleInit {
         productivityScore REAL,
         upgradeabilityScore REAL,
         features TEXT NOT NULL DEFAULT '[]',
+        technicalSpecs TEXT NOT NULL DEFAULT '{}',
         createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
@@ -102,7 +103,16 @@ export class DatabaseService implements OnModuleInit {
         createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS store_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
+    const columns = await this.database.execute({ sql: 'PRAGMA table_info(products)', args: [] });
+    if (!columns.rows.some((row) => String(row.name) === 'technicalSpecs')) {
+      await this.database.execute("ALTER TABLE products ADD COLUMN technicalSpecs TEXT NOT NULL DEFAULT '{}'" );
+    }
   }
 
   private async seed() {
@@ -115,8 +125,8 @@ export class DatabaseService implements OnModuleInit {
           `INSERT INTO products (
             name, slug, description, price, stock, imageUrl, active, type,
             cpu, gpu, ramGb, storageGb, vramGb, cpuScore, gpuScore,
-            productivityScore, upgradeabilityScore, features
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            productivityScore, upgradeabilityScore, features, technicalSpecs
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           product.name,
           product.slug,
           product.description,
@@ -135,9 +145,42 @@ export class DatabaseService implements OnModuleInit {
           product.productivityScore ?? null,
           product.upgradeabilityScore ?? null,
           JSON.stringify(product.features ?? []),
+          JSON.stringify(product.technicalSpecs ?? {}),
         );
+        if (product.technicalSpecs && Object.keys(product.technicalSpecs).length) {
+          await this.run("UPDATE products SET technicalSpecs = ? WHERE slug = ? AND (technicalSpecs IS NULL OR technicalSpecs = '{}' OR technicalSpecs = '')", JSON.stringify(product.technicalSpecs), product.slug);
+        }
+        await this.syncSeedProfile(product);
       }
     }
+
+    // Add new demo inventory to existing databases without duplicating products.
+    if (productCount?.count) {
+      for (const product of PRODUCT_SEEDS) {
+        await this.run(
+          `INSERT OR IGNORE INTO products (
+            name, slug, description, price, stock, imageUrl, active, type,
+            cpu, gpu, ramGb, storageGb, vramGb, cpuScore, gpuScore,
+            productivityScore, upgradeabilityScore, features, technicalSpecs
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          product.name, product.slug, product.description, product.price,
+          product.stock, product.imageUrl, product.active ? 1 : 0, product.type,
+          product.cpu ?? null, product.gpu ?? null, product.ramGb ?? null,
+          product.storageGb ?? null, product.vramGb ?? null, product.cpuScore ?? null,
+          product.gpuScore ?? null, product.productivityScore ?? null,
+          product.upgradeabilityScore ?? null, JSON.stringify(product.features ?? []),
+          JSON.stringify(product.technicalSpecs ?? {}),
+        );
+        if (product.technicalSpecs && Object.keys(product.technicalSpecs).length) {
+          await this.run("UPDATE products SET technicalSpecs = ? WHERE slug = ? AND (technicalSpecs IS NULL OR technicalSpecs = '{}' OR technicalSpecs = '')", JSON.stringify(product.technicalSpecs), product.slug);
+        }
+        await this.syncSeedProfile(product);
+      }
+    }
+
+    await this.run(
+      `INSERT OR IGNORE INTO store_settings (key, value) VALUES ('assemblyEnabled', 'true'), ('assemblyPrice', '150000')`,
+    );
 
     for (const workload of WORKLOAD_SEEDS) {
       await this.run(
@@ -166,5 +209,19 @@ export class DatabaseService implements OnModuleInit {
         workload.recommendedVramGb,
       );
     }
+  }
+
+  private async syncSeedProfile(product: (typeof PRODUCT_SEEDS)[number]) {
+    if (product.type === 'PREBUILT_PC') return;
+    await this.run(
+      `UPDATE products SET cpu = COALESCE(cpu, ?), gpu = COALESCE(gpu, ?), ramGb = COALESCE(ramGb, ?), storageGb = COALESCE(storageGb, ?), vramGb = COALESCE(vramGb, ?), technicalSpecs = ? WHERE slug = ?`,
+      product.cpu ?? null,
+      product.gpu ?? null,
+      product.ramGb ?? null,
+      product.storageGb ?? null,
+      product.vramGb ?? null,
+      JSON.stringify(product.technicalSpecs ?? {}),
+      product.slug,
+    );
   }
 }

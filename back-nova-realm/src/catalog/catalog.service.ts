@@ -118,8 +118,8 @@ export class CatalogService {
         `INSERT INTO products (
           name, slug, description, price, stock, imageUrl, active, type, cpu, gpu,
           ramGb, storageGb, vramGb, cpuScore, gpuScore, productivityScore,
-          upgradeabilityScore, features
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          upgradeabilityScore, features, technicalSpecs
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         normalizedInput.name,
         normalizedInput.slug,
         normalizedInput.description,
@@ -138,6 +138,7 @@ export class CatalogService {
         normalizedInput.productivityScore ?? null,
         normalizedInput.upgradeabilityScore ?? null,
         JSON.stringify(normalizedInput.features ?? []),
+        JSON.stringify(normalizedInput.technicalSpecs ?? {}),
       );
       return this.findById(Number(result.lastInsertRowid));
     } catch (error) {
@@ -175,13 +176,14 @@ export class CatalogService {
       'productivityScore',
       'upgradeabilityScore',
       'features',
+      'technicalSpecs',
     ]);
     const columns: string[] = [];
     const values: (string | number | null)[] = [];
     for (const [key, rawValue] of entries) {
       if (!allowed.has(key)) continue;
       columns.push(`${key} = ?`);
-      if (key === 'features') values.push(JSON.stringify(rawValue));
+      if (key === 'features' || key === 'technicalSpecs') values.push(JSON.stringify(rawValue));
       else if (key === 'active') values.push(rawValue ? 1 : 0);
       else values.push(rawValue as string | number | null);
     }
@@ -214,6 +216,7 @@ export class CatalogService {
       ...row,
       active: Boolean(row.active),
       features: JSON.parse(row.features || '[]') as string[],
+      technicalSpecs: JSON.parse(row.technicalSpecs || '{}') as Product['technicalSpecs'],
     };
   }
 

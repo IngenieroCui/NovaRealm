@@ -9,6 +9,7 @@ import { RecommendationsModule } from './recommendations/recommendations.module'
 import { AiModule } from './ai/ai.module';
 import { AssistantModule } from './assistant/assistant.module';
 import { AdminModule } from './admin/admin.module';
+import { BuilderModule } from './builder/builder.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { AdminModule } from './admin/admin.module';
     AiModule,
     AssistantModule,
     AdminModule,
+    BuilderModule,
   ],
   controllers: [AppController],
   providers: [AppService],

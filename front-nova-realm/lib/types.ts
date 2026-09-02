@@ -7,7 +7,13 @@ export type ProductType =
   | "STORAGE"
   | "PSU"
   | "CASE"
-  | "COOLING";
+  | "COOLING"
+  | "MONITOR"
+  | "KEYBOARD"
+  | "MOUSE"
+  | "HEADSET";
+export type PeripheralType = "MONITOR" | "KEYBOARD" | "MOUSE" | "HEADSET";
+export type ShoppingIntent = "PREBUILT_PC" | "CUSTOM_PC" | "UPGRADE_PC" | "COMPONENT" | "PC_WITH_PERIPHERALS";
 
 export interface Product {
   id: number;
@@ -29,6 +35,7 @@ export interface Product {
   productivityScore: number | null;
   upgradeabilityScore: number | null;
   features: string[];
+  technicalSpecs: Record<string, string | number | boolean>;
   createdAt: string;
   updatedAt: string;
 }
@@ -93,4 +100,55 @@ export interface ChatResponse {
   needsMoreInformation: boolean;
   filters: RecommendationFilters | null;
   recommendations: Recommendation[];
+  shoppingIntent?: ShoppingIntent;
+  componentRecommendations?: Product[];
+  componentType?: string;
+  currentPc?: { cpu: string | null; gpu: string | null; ramGb: number | null };
+  upgradeRecommendations?: Product[];
+  peripheralRecommendations?: Product[];
+  build?: BuildSummary;
+  actions?: AssistantAction[];
+  quickActions?: string[];
+  warnings?: string[];
+  upgradeAnalysis?: UpgradeAnalysis;
+}
+
+export interface BuildSummary {
+  products: Product[];
+  components: Product[];
+  peripherals: Product[];
+  subtotal: number;
+  assembly: number;
+  total: number;
+  budgetRemaining: number | null;
+  assemblyEnabled: boolean;
+  warnings: string[];
+  compatibilityIssues?: CompatibilityIssue[];
+  compatible: boolean;
+}
+
+export interface CompatibilityIssue {
+  code: string;
+  severity: "INFO" | "WARNING" | "ERROR";
+  message: string;
+}
+
+export interface AssistantAction {
+  action: string;
+  productId?: number;
+  productSlug?: string;
+  componentType?: ProductType;
+  label?: string;
+}
+
+export interface UpgradeAnalysis {
+  currentPc: { cpu: string | null; gpu: string | null; ramGb: number | null };
+  goal: string;
+  detectedScores: { cpu: number | null; gpu: number | null; ramGb: number | null };
+  priority: ProductType;
+  bestFirstUpgrade: Product | null;
+  bestValue: Product | null;
+  premium: Product | null;
+  noNeedToChange: string;
+  recommendations: Product[];
 }

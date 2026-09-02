@@ -3,6 +3,8 @@ import Link from "next/link";
 import "./globals.css";
 import { Logo } from "@/components/logo";
 import { getWhatsAppUrl, siteConfig } from "@/lib/site-config";
+import { NovaAssistant } from "@/components/nova-assistant";
+import { NovaProvider } from "@/lib/nova-context";
 
 export const metadata: Metadata = {
   title: "NovaRealm | Encuentra tu PC ideal",
@@ -20,6 +22,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <nav className="main-nav" aria-label="Navegación principal">
               <Link href="/productos?type=PREBUILT_PC">Equipos</Link>
               <Link href="/productos?context=components">Componentes</Link>
+              <Link href="/configurador">Armar PC</Link>
               <Link href="/#como-funciona">Cómo funciona</Link>
             </nav>
             <div className="header-actions">
@@ -30,7 +33,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
           </div>
         </header>
-        <main>{children}</main>
+        <NovaProvider><main>{children}</main><NovaAssistant /></NovaProvider>
         <footer className="site-footer">
           <div className="shell footer-inner">
             <div className="footer-brand">

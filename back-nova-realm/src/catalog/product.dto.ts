@@ -5,6 +5,7 @@ import {
   IsEnum,
   IsInt,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
   Max,
@@ -112,4 +113,5 @@ export class ProductWriteDto {
   @IsOptional() @IsNumber() @Min(0) @Max(100) productivityScore?: number;
   @IsOptional() @IsNumber() @Min(0) @Max(100) upgradeabilityScore?: number;
   @IsOptional() @IsArray() @IsString({ each: true }) features?: string[];
+  @IsOptional() @IsObject() technicalSpecs?: Record<string, string | number | boolean>;
 }

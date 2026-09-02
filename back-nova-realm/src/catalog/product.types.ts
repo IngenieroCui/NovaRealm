@@ -8,7 +8,13 @@ export enum ProductType {
   PSU = 'PSU',
   CASE = 'CASE',
   COOLING = 'COOLING',
+  MONITOR = 'MONITOR',
+  KEYBOARD = 'KEYBOARD',
+  MOUSE = 'MOUSE',
+  HEADSET = 'HEADSET',
 }
+
+export type ProductTechnicalSpecs = Record<string, string | number | boolean>;
 
 export interface Product {
   id: number;
@@ -30,6 +36,7 @@ export interface Product {
   productivityScore: number | null;
   upgradeabilityScore: number | null;
   features: string[];
+  technicalSpecs: ProductTechnicalSpecs;
   createdAt: string;
   updatedAt: string;
 }
@@ -37,4 +44,5 @@ export interface Product {
 export type ProductRow = Omit<Product, 'active' | 'features'> & {
   active: number;
   features: string;
+  technicalSpecs: string;
 };
