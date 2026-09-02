@@ -66,4 +66,34 @@ describe('AssistantService consultation flows', () => {
     expect(response.message).toBe('¿Para qué vas a usar el equipo?');
     expect(response.quickActions).toContain('Gaming');
   });
+
+  it('does not expose builder progress before the user chooses a mode', async () => {
+    ai.interpret.mockResolvedValue({
+      needsMoreInformation: false,
+      filters: { budgetMax: 5000000, workloads: [{ slug: 'gaming', importance: 1 }] },
+    });
+
+    const response = await service.chat({
+      message: 'Ya tengo presupuesto, ¿qué modo prefiero?',
+      shoppingIntent: ShoppingIntent.CUSTOM_PC,
+      filters: { budgetMax: 5000000, workloads: [{ slug: 'gaming', importance: 1 }] },
+    });
+
+    expect(response.actions?.map((action) => action.action)).toEqual(['START_GUIDED', 'AUTO_BUILD']);
+    expect(response.flow).toBeUndefined();
+  });
+
+  it('lets an explicit component in the current message override previous context', () => {
+    const detect = (service as unknown as { detectComponentType: (message: string, context: { selectedComponentType: string; builderStep: string }) => string | undefined }).detectComponentType.bind(service);
+    expect(detect('Mejor miremos RAM', { selectedComponentType: 'GPU', builderStep: 'GPU' })).toBe('RAM');
+  });
+
+  it('lets an explicit prebuilt intent replace a previous custom intent', async () => {
+    ai.interpret.mockResolvedValue({ needsMoreInformation: true, filters: undefined });
+    const response = await service.chat({
+      message: 'Mejor quiero comprar una lista ya armada.',
+      context: { shoppingIntent: ShoppingIntent.CUSTOM_PC, buildSlugs: [] },
+    });
+    expect(response.shoppingIntent).toBe(ShoppingIntent.PREBUILT_PC);
+  });
 });

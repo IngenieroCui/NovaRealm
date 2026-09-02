@@ -2,6 +2,19 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 
+export function normalizeOrigin(origin: string) {
+  return origin.trim().replace(/\/$/, '');
+}
+
+export function isAllowedOrigin(origin: string | undefined, configuredOrigins: string[]) {
+  if (!origin) return true;
+  const normalized = normalizeOrigin(origin);
+  const configured = configuredOrigins.map(normalizeOrigin).filter(Boolean);
+  return configured.includes(normalized)
+    || normalized === 'https://nova-realm-front.vercel.app'
+    || /^https:\/\/nova-realm-front-[a-z0-9-]+\.vercel\.app$/i.test(normalized);
+}
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
@@ -18,10 +31,19 @@ async function bootstrap() {
     }),
   );
 
+  const configuredOrigins = (process.env.FRONTEND_URL ?? 'http://localhost:3000')
+    .split(',')
+    .map(normalizeOrigin)
+    .filter(Boolean);
   app.enableCors({
-    origin: (process.env.FRONTEND_URL ?? 'http://localhost:3000')
-      .split(',')
-      .map((origin) => origin.trim()),
+    origin: (origin, callback) => {
+      if (isAllowedOrigin(origin, configuredOrigins)) {
+        callback(null, true);
+        return;
+      }
+      console.warn(`CORS blocked origin: ${origin}`);
+      callback(null, false);
+    },
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'x-admin-key'],
   });

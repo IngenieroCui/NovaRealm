@@ -3,7 +3,9 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsIn,
+  IsEnum,
   IsOptional,
   IsString,
   IsInt,
@@ -47,6 +49,8 @@ export class AssistantContextDto {
   @IsOptional() @IsIn(Object.values(ShoppingIntent)) shoppingIntent?: ShoppingIntent;
   @IsOptional() @IsString() @MaxLength(120) selectedComponentType?: string;
   @IsOptional() @IsIn(['GUIDED', 'AUTO']) builderMode?: 'GUIDED' | 'AUTO';
+  @IsOptional() @IsEnum(['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'STORAGE', 'PSU', 'COOLING', 'CASE', 'PERIPHERALS', 'ASSEMBLY', 'DONE']) builderStep?: string;
+  @IsOptional() @IsBoolean() assemblySelected?: boolean;
   @IsOptional() @ValidateNested() @Type(() => CurrentPcDto) currentPc?: CurrentPcDto;
   @IsOptional() @IsString() @MaxLength(160) upgradeGoal?: string;
 }

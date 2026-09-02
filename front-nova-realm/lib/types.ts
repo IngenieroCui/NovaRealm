@@ -150,6 +150,7 @@ export interface BuildSummary {
   total: number;
   budgetRemaining: number | null;
   assemblyEnabled: boolean;
+  complete: boolean;
   warnings: string[];
   compatibilityIssues?: CompatibilityIssue[];
   compatible: boolean;

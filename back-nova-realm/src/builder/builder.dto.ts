@@ -1,12 +1,15 @@
 import { Type } from 'class-transformer';
 import { ArrayMaxSize, IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsOptional, IsString, Min, ValidateNested, MaxLength } from 'class-validator';
 import { ProductType } from '../catalog/product.types';
+import { WorkloadPreferenceDto } from '../recommendations/recommendation.dto';
 
 export class BuilderRequestDto {
   @IsArray() @ArrayMaxSize(12) @IsString({ each: true }) itemSlugs: string[] = [];
   @IsOptional() @IsInt() @Min(0) budgetMax?: number;
   @IsOptional() @IsBoolean() assembly?: boolean;
+  @IsOptional() @IsBoolean() assemblySelected?: boolean;
   @IsOptional() @IsBoolean() complete?: boolean;
+  @IsOptional() @IsArray() @ArrayMaxSize(8) @ValidateNested({ each: true }) @Type(() => WorkloadPreferenceDto) workloads?: WorkloadPreferenceDto[];
 }
 
 export class ComponentRecommendationRequestDto extends BuilderRequestDto {
@@ -28,8 +31,11 @@ export class BuilderActionDto {
   @IsOptional() @IsInt() productId?: number;
   @IsOptional() @IsEnum(ProductType) componentType?: ProductType;
   @IsOptional() @IsBoolean() assembly?: boolean;
+  @IsOptional() @IsBoolean() assemblySelected?: boolean;
   @IsOptional() @IsInt() @Min(500000) budgetMax?: number;
   @IsOptional() @IsIn(['GUIDED', 'AUTO']) mode?: 'GUIDED' | 'AUTO';
+  @IsOptional() @IsString() @MaxLength(160) label?: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(8) @ValidateNested({ each: true }) @Type(() => WorkloadPreferenceDto) workloads?: WorkloadPreferenceDto[];
 }
 
 export class UpgradePcDto {

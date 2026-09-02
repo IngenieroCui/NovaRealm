@@ -1,8 +1,11 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { CatalogService } from '../catalog/catalog.service';
 import { DatabaseService } from '../database/database.service';
 import { Product, ProductType } from '../catalog/product.types';
 import { AutoBuildRequestDto, BuilderActionDto, BuilderRequestDto, ComponentRecommendationRequestDto, UpgradePcDto } from './builder.dto';
+import { WorkloadsService } from '../workloads/workloads.service';
+import { Workload } from '../workloads/workload.types';
+import { WorkloadPreferenceDto } from '../recommendations/recommendation.dto';
 
 export type CompatibilitySeverity = 'INFO' | 'WARNING' | 'ERROR';
 export interface CompatibilityIssue {
@@ -27,7 +30,11 @@ export interface BuilderFlow {
 
 @Injectable()
 export class BuilderService {
-  constructor(private readonly catalog: CatalogService, private readonly database: DatabaseService) {}
+  constructor(
+    private readonly catalog: CatalogService,
+    private readonly database: DatabaseService,
+    private readonly workloads: WorkloadsService,
+  ) {}
 
   async settings() {
     const rows = await this.database.all<{ key: string; value: string }>('SELECT key, value FROM store_settings WHERE key IN (?, ?)', 'assemblyEnabled', 'assemblyPrice');
@@ -44,10 +51,20 @@ export class BuilderService {
     if (!COMPONENT_TYPES.includes(input.componentType) && !PERIPHERAL_TYPES.includes(input.componentType)) throw new BadRequestException('Tipo no disponible para el configurador');
     const selected = await this.products(input.itemSlugs);
     const selectedSlugs = new Set(selected.map((item) => item.slug));
-    const candidates = (await this.catalog.findAll({ type: input.componentType, inStock: true })).filter((product) => !selectedSlugs.has(product.slug)).filter((product) => !input.budgetMax || product.price <= input.budgetMax!);
+    const workloadEntities = await this.loadWorkloads(input.workloads);
+    const remainingBudget = input.budgetMax === undefined
+      ? undefined
+      : Math.max(0, input.budgetMax - this.subtotal(selected) - (input.assemblySelected ?? input.assembly ? await this.assemblyPrice() : 0));
+    const reserve = remainingBudget === undefined ? 0 : await this.minimumReserve(selected, input.componentType);
+    const candidateBudget = remainingBudget === undefined ? undefined : Math.max(0, remainingBudget - reserve);
+    const candidates = (await this.catalog.findAll({ type: input.componentType, inStock: true }))
+      .filter((product) => !selectedSlugs.has(product.slug))
+      .filter((product) => candidateBudget === undefined || product.price <= candidateBudget);
     const compatible = candidates.filter((product) => this.isCompatible(product, selected)).sort((a, b) => {
-      if (input.preference === 'powerful') return this.scoreForType(b, input.componentType) - this.scoreForType(a, input.componentType) || b.price - a.price;
-      return a.price - b.price;
+      if (input.preference === 'cheaper') return a.price - b.price || this.componentScore(b, input.componentType, workloadEntities) - this.componentScore(a, input.componentType, workloadEntities);
+      const scoreDifference = this.componentScore(b, input.componentType, workloadEntities) - this.componentScore(a, input.componentType, workloadEntities);
+      const valueDifference = this.componentValueScore(b, input.componentType, workloadEntities) - this.componentValueScore(a, input.componentType, workloadEntities);
+      return input.preference === 'powerful' ? scoreDifference || valueDifference : valueDifference || scoreDifference;
     });
     return { componentType: input.componentType, recommendations: compatible.slice(0, 5), warnings: compatible.length ? [] : ['No encontré opciones disponibles que cumplan el presupuesto y la compatibilidad básica.'] };
   }
@@ -63,71 +80,79 @@ export class BuilderService {
     const components = products.filter((product) => COMPONENT_TYPES.includes(product.type));
     const peripherals = products.filter((product) => PERIPHERAL_TYPES.includes(product.type));
     const subtotal = products.reduce((total, product) => total + product.price, 0);
-    const assembly = input.assembly && settings.assemblyEnabled ? settings.assemblyPrice : 0;
+    const assemblySelected = input.assemblySelected ?? input.assembly ?? false;
+    const assembly = assemblySelected && settings.assemblyEnabled ? settings.assemblyPrice : 0;
     const compatibilityIssues = this.compatibilityIssues(components, input.complete ?? false);
     const warnings = compatibilityIssues.map((issue) => issue.message);
     if (input.budgetMax && subtotal + assembly > input.budgetMax) warnings.push(`La configuración supera el presupuesto en ${subtotal + assembly - input.budgetMax} COP.`);
-    return { products, components, peripherals, subtotal, assembly, total: subtotal + assembly, budgetRemaining: input.budgetMax ? input.budgetMax - subtotal - assembly : null, assemblyEnabled: settings.assemblyEnabled, warnings, compatibilityIssues, compatible: !compatibilityIssues.some((issue) => issue.severity === 'ERROR') };
+    const complete = COMPONENT_TYPES.every((type) => components.some((product) => product.type === type));
+    return { products, components, peripherals, subtotal, assembly, total: subtotal + assembly, budgetRemaining: input.budgetMax ? input.budgetMax - subtotal - assembly : null, assemblyEnabled: settings.assemblyEnabled, warnings, compatibilityIssues, complete, compatible: !compatibilityIssues.some((issue) => issue.severity === 'ERROR') };
   }
 
   async autoBuild(input: AutoBuildRequestDto) {
     const products = await this.catalog.findAll({ types: COMPONENT_TYPES, inStock: true });
-    const pick = (type: ProductType, maxPrice: number, predicate: (product: Product) => boolean = () => true) => {
-      const candidates = products.filter((product) => product.type === type && predicate(product));
-      return (candidates.filter((product) => product.price <= maxPrice).sort((a, b) => this.scoreForType(b, type) - this.scoreForType(a, type) || a.price - b.price)[0]
-        ?? candidates.sort((a, b) => a.price - b.price)[0]);
-    };
-    const budget = input.budgetMax;
-    const cpu = pick(ProductType.CPU, budget * .17);
-    const board = cpu ? pick(ProductType.MOTHERBOARD, budget * .13, (item) => item.technicalSpecs.socket === cpu.technicalSpecs.socket) : undefined;
-    const ram = board ? pick(ProductType.RAM, budget * .12, (item) => item.technicalSpecs.memoryType === board.technicalSpecs.memoryType) : undefined;
-    const gpu = pick(ProductType.GPU, budget * .34);
-    const storage = pick(ProductType.STORAGE, budget * .08);
-    const psu = pick(ProductType.PSU, budget * .08, (item) => Number(item.technicalSpecs.wattage ?? 0) >= Number(cpu?.technicalSpecs.tdpW ?? 65) + Number(gpu?.technicalSpecs.tdpW ?? 160) + 150);
-      const cooling = pick(ProductType.COOLING, budget * .06);
-    const pcCase = pick(ProductType.CASE, budget * .06);
-    const slugs = [cpu, board, ram, gpu, storage, psu, cooling, pcCase].filter((product): product is Product => Boolean(product)).map((product) => product.slug);
-    return this.summarize({ itemSlugs: slugs, budgetMax: input.budgetMax, assembly: input.assembly ?? false });
+    const workloadEntities = await this.loadWorkloads(input.workloadSlugs?.map((slug) => ({ slug, importance: 1 })));
+    const assembly = input.assembly ?? false;
+    const settings = await this.settings();
+    const assemblyCost = assembly && settings.assemblyEnabled ? settings.assemblyPrice : 0;
+    const componentBudget = input.budgetMax - assemblyCost;
+    const cheapest = this.findCheapestBuild(products, workloadEntities);
+    if (!cheapest || this.subtotal(cheapest) > componentBudget) {
+      const summary = await this.summarize({ itemSlugs: [], budgetMax: input.budgetMax, assemblySelected: assembly, complete: true, workloads: input.workloadSlugs?.map((slug) => ({ slug, importance: 1 })) });
+      return { ...summary, warnings: [...summary.warnings, 'No puedo completar una configuración razonable dentro de ese presupuesto con el catálogo actual.'] };
+    }
+    const targetBudget = Math.max(this.subtotal(cheapest), Math.floor(componentBudget * 0.95));
+    const selected = await this.upgradeBuild(cheapest, products, targetBudget, workloadEntities);
+    const slugs = selected.map((product) => product.slug);
+    return this.summarize({ itemSlugs: slugs, budgetMax: input.budgetMax, assemblySelected: assembly, complete: true, workloads: input.workloadSlugs?.map((slug) => ({ slug, importance: 1 })) });
   }
 
   async applyAction(input: BuilderActionDto) {
     const current = [...new Set(input.currentSlugs)];
+    const assemblySelected = input.assemblySelected ?? input.assembly ?? false;
     let target = input.productSlug ? await this.catalog.findBySlug(input.productSlug) : input.productId ? await this.catalog.findAll({ inStock: true }).then((items) => items.find((item) => item.id === input.productId)) : undefined;
     if (input.action === 'START_GUIDED') {
-      const summary = await this.summarize({ itemSlugs: current, budgetMax: input.budgetMax, assembly: false });
-      return { action: input.action, product: null, summary, flow: await this.flow(current, 'GUIDED'), recommendations: await this.nextRecommendations(current, input.budgetMax) };
+      const summary = await this.summarize({ itemSlugs: current, budgetMax: input.budgetMax, assemblySelected, workloads: input.workloads });
+      return { action: input.action, product: null, summary, flow: await this.flow(current, 'GUIDED'), recommendations: await this.nextRecommendations(current, input.budgetMax, input.workloads, assemblySelected) };
     }
     if (input.action === 'AUTO_BUILD') {
-      const summary = await this.autoBuild({ budgetMax: input.budgetMax ?? 500000, assembly: input.assembly ?? false });
+      const summary = await this.autoBuild({ budgetMax: input.budgetMax ?? 500000, workloadSlugs: input.workloads?.map((workload) => workload.slug), assembly: assemblySelected });
       return { action: input.action, product: null, summary, flow: await this.flow(summary.products.map((item) => item.slug), 'AUTO'), recommendations: [] };
     }
+    let effectiveAction = input.action;
     if (input.action === 'AUTO_SELECT') {
-      if (!input.componentType) throw new BadRequestException('Indica el tipo de componente que Nova debe elegir.');
-      const result = await this.recommendComponents({ componentType: input.componentType, itemSlugs: current, budgetMax: input.budgetMax, preference: 'powerful' });
+      const currentStep = (await this.flow(current, 'GUIDED')).currentStep;
+      if (!GUIDED_STEPS.includes(currentStep as ProductType)) throw new BadRequestException('La configuración ya no tiene un componente pendiente.');
+      const result = await this.recommendComponents({ componentType: currentStep as ProductType, itemSlugs: current, budgetMax: input.budgetMax, assemblySelected, workloads: input.workloads, preference: 'powerful' });
       target = result.recommendations[0];
+      effectiveAction = 'ADD_TO_BUILD';
     }
-    if (input.action !== 'CLEAR_BUILD' && input.action !== 'ADD_ASSEMBLY' && input.action !== 'REMOVE_ASSEMBLY' && !target) throw new BadRequestException('No encontré el producto para actualizar la configuración.');
+    if (effectiveAction !== 'CLEAR_BUILD' && effectiveAction !== 'ADD_ASSEMBLY' && effectiveAction !== 'REMOVE_ASSEMBLY' && !target) throw new BadRequestException('No encontré el producto para actualizar la configuración.');
     let slugs = current;
-    if (input.action === 'CLEAR_BUILD') slugs = [];
-    if (input.action === 'ADD_TO_BUILD' || input.action === 'ADD_PERIPHERAL' || input.action === 'REPLACE_COMPONENT') {
+    if (effectiveAction === 'CLEAR_BUILD') slugs = [];
+    if (effectiveAction === 'ADD_TO_BUILD' || effectiveAction === 'ADD_PERIPHERAL' || effectiveAction === 'REPLACE_COMPONENT') {
       if (target!.stock <= 0 || !target!.active) throw new BadRequestException('Ese producto no está disponible.');
       slugs = slugs.filter((slug) => slug !== target!.slug);
-      if (input.action === 'REPLACE_COMPONENT' || input.action === 'ADD_TO_BUILD' || input.action === 'ADD_PERIPHERAL') {
-        const existing = await this.products(slugs);
-        slugs = slugs.filter((slug) => !existing.some((item) => item.type === target!.type));
-      }
+      const existing = await this.products(slugs);
+      slugs = slugs.filter((slug) => !existing.some((item) => item.type === target!.type));
       slugs.push(target!.slug);
     }
-    if (input.action === 'REMOVE_FROM_BUILD' || input.action === 'REMOVE_PERIPHERAL') slugs = target ? slugs.filter((slug) => slug !== target.slug) : slugs;
-    const assembly = input.action === 'ADD_ASSEMBLY' ? true : input.action === 'REMOVE_ASSEMBLY' ? false : input.assembly ?? false;
-    const summary = await this.summarize({ itemSlugs: slugs, budgetMax: input.budgetMax, assembly });
-    return { action: input.action, product: target ?? null, summary, flow: await this.flow(slugs, input.mode ?? 'GUIDED'), recommendations: await this.nextRecommendations(slugs, input.budgetMax) };
+    if (effectiveAction === 'REMOVE_FROM_BUILD' || effectiveAction === 'REMOVE_PERIPHERAL') slugs = target ? slugs.filter((slug) => slug !== target.slug) : slugs;
+    const nextAssembly = effectiveAction === 'ADD_ASSEMBLY' ? true : effectiveAction === 'REMOVE_ASSEMBLY' ? false : assemblySelected;
+    const summary = await this.summarize({ itemSlugs: slugs, budgetMax: input.budgetMax, assemblySelected: nextAssembly, workloads: input.workloads });
+    if (summary.compatibilityIssues.some((issue) => issue.severity === 'ERROR' && issue.code !== 'OUT_OF_STOCK')) {
+      throw new ConflictException('La pieza elegida no es compatible con la configuración actual.');
+    }
+    if (input.budgetMax !== undefined && summary.total > input.budgetMax) {
+      throw new BadRequestException('La pieza elegida supera el presupuesto disponible.');
+    }
+    return { action: input.action, product: target ?? null, summary, flow: await this.flow(slugs, input.mode ?? 'GUIDED'), recommendations: await this.nextRecommendations(slugs, input.budgetMax, input.workloads, nextAssembly) };
   }
 
-  private async nextRecommendations(slugs: string[], budgetMax?: number) {
+  private async nextRecommendations(slugs: string[], budgetMax?: number, workloads?: WorkloadPreferenceDto[], assemblySelected = false) {
     const step = (await this.flow(slugs, 'GUIDED')).currentStep;
     if (!GUIDED_STEPS.includes(step as ProductType)) return [];
-    return (await this.recommendComponents({ componentType: step as ProductType, itemSlugs: slugs, budgetMax })).recommendations;
+    return (await this.recommendComponents({ componentType: step as ProductType, itemSlugs: slugs, budgetMax, workloads, assemblySelected })).recommendations;
   }
 
   async flow(slugs: string[], mode: BuilderMode = 'GUIDED'): Promise<BuilderFlow> {
@@ -144,6 +169,93 @@ export class BuilderService {
       progress: Math.round((completed.length / totalSteps) * 100),
       totalSteps,
     };
+  }
+
+  private async loadWorkloads(preferences?: WorkloadPreferenceDto[]) {
+    if (!preferences?.length) return [];
+    const entities = await this.workloads.findBySlugs(preferences.map((item) => item.slug));
+    const importance = new Map(preferences.map((item) => [item.slug, item.importance]));
+    return entities.map((workload) => ({ workload, importance: importance.get(workload.slug) ?? 1 }));
+  }
+
+  private subtotal(products: Product[]) {
+    return products.reduce((total, product) => total + product.price, 0);
+  }
+
+  private async assemblyPrice() {
+    const settings = await this.settings();
+    return settings.assemblyEnabled ? settings.assemblyPrice : 0;
+  }
+
+  private async minimumReserve(selected: Product[], targetType: ProductType) {
+    const missingTypes = COMPONENT_TYPES.filter((type) => type !== targetType && !selected.some((product) => product.type === type));
+    let reserve = 0;
+    for (const type of missingTypes) {
+      const candidates = await this.catalog.findAll({ type, inStock: true });
+      const cheapest = candidates
+        .filter((product) => this.isCompatible(product, selected))
+        .sort((a, b) => a.price - b.price)[0];
+      if (cheapest) reserve += cheapest.price;
+    }
+    return reserve;
+  }
+
+  private findCheapestBuild(products: Product[], workloads: Array<{ workload: Workload; importance: number }>) {
+    const cheapest = (type: ProductType, predicate: (product: Product) => boolean = () => true) => products
+      .filter((product) => product.type === type && predicate(product))
+      .sort((a, b) => a.price - b.price)[0];
+    const cpu = cheapest(ProductType.CPU);
+    const board = cpu ? cheapest(ProductType.MOTHERBOARD, (product) => this.isCompatible(product, [cpu])) : undefined;
+    const ram = board ? cheapest(ProductType.RAM, (product) => this.isCompatible(product, [cpu, board])) : undefined;
+    const gpu = cheapest(ProductType.GPU);
+    const storage = cheapest(ProductType.STORAGE);
+    const psu = cheapest(ProductType.PSU, (product) => this.isCompatible(product, [cpu, gpu]));
+    const cooling = cheapest(ProductType.COOLING);
+    const pcCase = cheapest(ProductType.CASE);
+    const build = [cpu, board, ram, gpu, storage, psu, cooling, pcCase].filter((product): product is Product => Boolean(product));
+    return build.length === COMPONENT_TYPES.length && this.isCompatible(build[0], build.slice(1)) && this.compatibilityIssues(build).every((issue) => issue.severity !== 'ERROR')
+      ? build
+      : this.findCheapestCompatibleBuild(products);
+  }
+
+  private findCheapestCompatibleBuild(products: Product[]) {
+    const sorted = (type: ProductType) => products.filter((product) => product.type === type).sort((a, b) => a.price - b.price);
+    for (const cpu of sorted(ProductType.CPU)) {
+      for (const board of sorted(ProductType.MOTHERBOARD).filter((candidate) => this.isCompatible(candidate, [cpu]))) {
+        const ram = sorted(ProductType.RAM).find((candidate) => this.isCompatible(candidate, [cpu, board]));
+        const gpu = sorted(ProductType.GPU)[0];
+        const storage = sorted(ProductType.STORAGE)[0];
+        const psu = sorted(ProductType.PSU).find((candidate) => this.isCompatible(candidate, [cpu, gpu]));
+        const cooling = sorted(ProductType.COOLING)[0];
+        const pcCase = sorted(ProductType.CASE)[0];
+        const build = [cpu, board, ram, gpu, storage, psu, cooling, pcCase].filter((product): product is Product => Boolean(product));
+        if (build.length === COMPONENT_TYPES.length && this.compatibilityIssues(build).every((issue) => issue.severity !== 'ERROR')) return build;
+      }
+    }
+    return undefined;
+  }
+
+  private async upgradeBuild(base: Product[], products: Product[], budget: number, workloads: Array<{ workload: Workload; importance: number }>) {
+    const selected = [...base];
+    for (let round = 0; round < COMPONENT_TYPES.length * 3; round += 1) {
+      const currentTotal = this.subtotal(selected);
+      let best: { type: ProductType; product: Product; gain: number; cost: number } | undefined;
+      for (const type of COMPONENT_TYPES) {
+        const current = selected.find((product) => product.type === type);
+        if (!current) continue;
+        for (const candidate of products.filter((product) => product.type === type && product.slug !== current.slug && product.price > current.price)) {
+          const next = selected.map((product) => product.type === type ? candidate : product);
+          const cost = candidate.price - current.price;
+          const gain = this.componentScore(candidate, type, workloads) - this.componentScore(current, type, workloads);
+          if (gain <= 0 || currentTotal + cost > budget || !this.compatibilityIssues(next).every((issue) => issue.severity !== 'ERROR')) continue;
+          if (!best || gain / cost > best.gain / best.cost) best = { type, product: candidate, gain, cost };
+        }
+      }
+      if (!best) break;
+      const index = selected.findIndex((product) => product.type === best!.type);
+      selected[index] = best.product;
+    }
+    return selected;
   }
 
   async analyzeUpgrade(input: UpgradePcDto) {
@@ -267,7 +379,41 @@ export class BuilderService {
     if (type === ProductType.CPU) return product.cpuScore ?? 0;
     if (type === ProductType.RAM) return product.ramGb ?? 0;
     if (type === ProductType.STORAGE) return product.storageGb ?? 0;
-    return product.price;
+    if (type === ProductType.PSU) return Number(product.technicalSpecs.wattage ?? 0);
+    if (type === ProductType.MOTHERBOARD) return product.upgradeabilityScore ?? 50;
+    if (type === ProductType.COOLING) return Number(product.technicalSpecs.tdpW ?? 0) || 1;
+    if (type === ProductType.CASE) return product.upgradeabilityScore ?? 50;
+    return 0;
+  }
+
+  private componentScore(product: Product, type: ProductType, workloads: Array<{ workload: Workload; importance: number }>) {
+    if (!workloads.length) return this.scoreForType(product, type);
+    const scoreForWorkload = workloads.reduce((total, { workload, importance }) => {
+      const value = type === ProductType.CPU
+        ? this.ratio(product.cpuScore, workload.recommendedCpuScore)
+        : type === ProductType.GPU
+          ? this.ratio(product.gpuScore, workload.recommendedGpuScore)
+          : type === ProductType.RAM
+            ? this.ratio(product.ramGb, workload.recommendedRamGb)
+            : type === ProductType.STORAGE
+              ? this.ratio(product.storageGb, 1000)
+              : type === ProductType.MOTHERBOARD
+                ? 70
+                : type === ProductType.PSU
+                  ? this.ratio(Number(product.technicalSpecs.wattage ?? 0), 850)
+                  : 60;
+      return total + value * importance;
+    }, 0);
+    const importanceTotal = workloads.reduce((total, item) => total + item.importance, 0);
+    return scoreForWorkload / Math.max(importanceTotal, 1);
+  }
+
+  private componentValueScore(product: Product, type: ProductType, workloads: Array<{ workload: Workload; importance: number }>) {
+    return (this.componentScore(product, type, workloads) * 1_000_000) / Math.max(product.price, 1);
+  }
+
+  private ratio(value: number | null | undefined, recommended: number) {
+    return Math.min(100, Math.max(0, ((value ?? 0) / Math.max(recommended, 1)) * 100));
   }
 
   private compatibilityIssues(products: Product[], requireComplete = false): CompatibilityIssue[] {

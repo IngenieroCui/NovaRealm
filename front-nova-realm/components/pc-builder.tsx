@@ -43,8 +43,8 @@ export function PcBuilder() {
     setError(""); setBusy(true);
     try {
       const next = await apiFetch<BuildSummary>("/builder/summary", { method: "POST", body: JSON.stringify({ itemSlugs: nextSelected, budgetMax: Number(budget) || undefined, assembly: nextAssembly, complete: true }) });
-      setSummary(next); patchSession({ currentBuild: next.products.map((product) => product.slug) });
-    } catch (reason) { setError((reason as Error).message.includes("Failed") ? "No pude validar la configuración. Revisa las piezas e intenta nuevamente." : (reason as Error).message); }
+      setSummary(next); patchSession({ currentBuild: next.products.map((product) => product.slug), assemblySelected: next.assembly > 0 });
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "No pude validar la configuración. Revisa las piezas e intenta nuevamente."); }
     finally { setBusy(false); }
   }
 
@@ -53,7 +53,7 @@ export function PcBuilder() {
     try {
       const next = await apiFetch<BuildSummary>("/builder/autobuild", { method: "POST", body: JSON.stringify({ budgetMax: Number(budget), assembly: false }) });
       setSelected(Object.fromEntries(next.products.filter((product) => componentSteps.includes(product.type)).map((product) => [product.type, product.slug])));
-      setSummary(next); patchSession({ currentBuild: next.products.map((product) => product.slug) });
+      setSummary(next); patchSession({ currentBuild: next.products.map((product) => product.slug), assemblySelected: next.assembly > 0 });
     } catch { setError("No pude armar una base con ese presupuesto. Prueba con un monto mayor."); }
     finally { setBusy(false); }
   }
