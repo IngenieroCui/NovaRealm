@@ -118,11 +118,17 @@ function specsForComponent(name: string, type: string): Record<string, string | 
   return {};
 }
 
-const peripheral = (name: string, slug: string, type: string, price: number, features: string[], technicalSpecs: Record<string, string | number | boolean>): ProductSeed => ({
-  name, slug, type, price, stock: 8, active: true, imageUrl: '/products/component.svg',
-  description: `${name}. Periférico demo para complementar tu estación NovaRealm.`, features,
-  technicalSpecs,
-});
+const peripheral = (name: string, slug: string, type: string, price: number, features: string[], technicalSpecs: Record<string, string | number | boolean>): ProductSeed => {
+  const monitorSpecs: Record<string, string | number | boolean> = type === 'MONITOR' ? {
+    sizeInches: Number(name.match(/(\d+)\s*(?:pulgadas|\")?/i)?.[1] ?? 24),
+    panelType: 'IPS',
+  } : {};
+  return {
+    name, slug, type, price, stock: 8, active: true, imageUrl: '/products/component.svg',
+    description: `${name}. Periférico demo para complementar tu estación NovaRealm.`, features,
+    technicalSpecs: { ...monitorSpecs, ...technicalSpecs },
+  };
+};
 
 export const PRODUCT_SEEDS: ProductSeed[] = [
   pc(

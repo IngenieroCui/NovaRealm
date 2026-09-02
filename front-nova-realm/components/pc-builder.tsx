@@ -37,12 +37,12 @@ export function PcBuilder() {
   const componentSubtotal = components.reduce((total, product) => total + product.price, 0);
   const peripheralSubtotal = peripherals.reduce((total, product) => total + product.price, 0);
   const groups = useMemo(() => [...componentSteps, ...peripheralSteps].map((type) => ({ type, options: products.filter((product) => product.type === type) })), [products]);
-  useEffect(() => { patchSession({ currentBuild: selectedSlugs }); }, [patchSession, selectedSlugs.join("|")]);
+  useEffect(() => { patchSession({ currentBuild: selectedSlugs }); }, [patchSession, selectedSlugs]);
 
   async function refresh(nextSelected = selectedSlugs, nextAssembly = assembly) {
     setError(""); setBusy(true);
     try {
-      const next = await apiFetch<BuildSummary>("/builder/summary", { method: "POST", body: JSON.stringify({ itemSlugs: nextSelected, budgetMax: Number(budget) || undefined, assembly: nextAssembly }) });
+      const next = await apiFetch<BuildSummary>("/builder/summary", { method: "POST", body: JSON.stringify({ itemSlugs: nextSelected, budgetMax: Number(budget) || undefined, assembly: nextAssembly, complete: true }) });
       setSummary(next); patchSession({ currentBuild: next.products.map((product) => product.slug) });
     } catch (reason) { setError((reason as Error).message.includes("Failed") ? "No pude validar la configuración. Revisa las piezas e intenta nuevamente." : (reason as Error).message); }
     finally { setBusy(false); }

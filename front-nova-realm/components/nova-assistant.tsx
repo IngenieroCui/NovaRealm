@@ -7,13 +7,13 @@ import { NovaChat } from "./nova-chat";
 
 export function NovaLauncher() {
   const { openNova, session } = useNova();
-  return <button className="nova-launcher" onClick={() => openNova(session.shoppingIntent)} aria-label="Abrir asistente Nova"><span>✦</span><small>Nova</small></button>;
+  return <button className="nova-launcher" onClick={() => openNova(session.shoppingIntent)} aria-label="Abrir asistente Nova"><span aria-hidden="true">N</span><small>Nova</small></button>;
 }
 
 export function NovaDrawer() {
   const { open, closeNova, session } = useNova();
-  return <aside className={`nova-drawer ${open ? "is-open" : ""}`} aria-hidden={!open}>
-    <div className="nova-drawer-header"><div><span className="mini-avatar">✦</span><div><strong>Nova</strong><small>Tu asesora tecnológica</small></div></div><button onClick={closeNova} aria-label="Cerrar Nova">×</button></div>
+  return <aside className={`nova-drawer ${open ? "is-open" : ""}`} aria-hidden={!open} inert={!open ? true : undefined} role="dialog" aria-modal="true" aria-label="Chat con Nova">
+    <div className="nova-drawer-header"><div><span className="mini-avatar" aria-hidden="true">N</span><div><strong>Nova</strong><small>Tu asesora tecnológica</small></div></div><button onClick={closeNova} aria-label="Cerrar Nova">×</button></div>
     <NovaChat compact context={session} />
   </aside>;
 }

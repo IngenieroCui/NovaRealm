@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
-import type { ProductType, RecommendationFilters, ShoppingIntent } from "./types";
+import type { BuilderFlow, BuilderMode, ProductType, RecommendationFilters, ShoppingIntent } from "./types";
 
 export interface NovaProductContext {
   slug: string;
@@ -16,6 +16,8 @@ export interface NovaSession {
   selectedProduct: NovaProductContext | null;
   selectedComponentType?: ProductType;
   conversation: Array<{ role: "user" | "assistant"; content: string }>;
+  builderMode?: BuilderMode;
+  builderFlow?: BuilderFlow;
 }
 
 interface NovaContextValue {

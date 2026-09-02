@@ -2,12 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { apiFetch, PRODUCT_TYPE_LABELS } from "@/lib/api";
 import type { Product, ProductType } from "@/lib/types";
 import { ProductCard } from "./product-card";
 import { CardSkeletons } from "./loading";
 
 type CatalogContext = "all" | "components" | "systems";
+type DedicatedCatalogContext = CatalogContext | "peripherals";
 type StockFilter = "all" | "available" | "sold-out";
 type SpecificationKey = "ramGb" | "storageGb" | "vramGb" | "cpuScore" | "gpuScore";
 
@@ -22,6 +24,8 @@ const specificationFilters: SpecificationFilter[] = [
 ];
 
 const productTypes = Object.keys(PRODUCT_TYPE_LABELS) as ProductType[];
+const componentTypes: ProductType[] = ["CPU", "GPU", "RAM", "MOTHERBOARD", "STORAGE", "PSU", "CASE", "COOLING"];
+const peripheralTypes: ProductType[] = ["MONITOR", "KEYBOARD", "MOUSE", "HEADSET"];
 
 function normalize(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es-CO");
@@ -44,7 +48,7 @@ function typesFromUrl(searchParams: ReturnType<typeof useSearchParams>) {
   return [...new Set(types)];
 }
 
-export function CatalogView() {
+export function CatalogView({ catalogContext }: { catalogContext?: DedicatedCatalogContext } = {}) {
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
@@ -59,15 +63,16 @@ export function CatalogView() {
   const [sort, setSort] = useState("featured");
   const [resolution, setResolution] = useState("");
   const [refreshRate, setRefreshRate] = useState("");
-  const context = getContext(searchParams);
-  const selectedTypes = typesFromUrl(searchParams);
+  const context = catalogContext ?? getContext(searchParams);
+  const selectedTypes = typesFromUrl(searchParams).filter((type) => context === "components" ? componentTypes.includes(type) : context === "peripherals" ? peripheralTypes.includes(type) : true);
 
   useEffect(() => {
     apiFetch<Product[]>("/products").then(setProducts).catch((reason: Error) => setError(reason.message)).finally(() => setLoading(false));
   }, []);
 
   const productsInContext = useMemo(() => {
-    if (context === "components") return products.filter((product) => product.type !== "PREBUILT_PC");
+    if (context === "components") return products.filter((product) => componentTypes.includes(product.type));
+    if (context === "peripherals") return products.filter((product) => peripheralTypes.includes(product.type));
     if (context === "systems") return products.filter((product) => product.type === "PREBUILT_PC");
     return products;
   }, [context, products]);
@@ -128,8 +133,10 @@ export function CatalogView() {
     setMinimums({ ramGb: "", storageGb: "", vramGb: "", cpuScore: "", gpuScore: "" }); setResolution(""); setRefreshRate("");
   }
 
+  const catalogTitle = context === "systems" ? "Equipos listos para usar." : context === "components" ? "Componentes para armar tu PC." : context === "peripherals" ? "Periféricos para completar tu espacio." : "Hardware elegido con criterio.";
+  const catalogDescription = context === "systems" ? "Computadores completos, revisados y listos para comprar." : context === "components" ? "Procesadores, gráficas y piezas compatibles para tu configuración." : context === "peripherals" ? "Monitores y accesorios para trabajar, jugar o crear." : "Explora por intención: equipos completos, componentes o periféricos.";
   return <div className="catalog-page">
-    <section className="catalog-hero"><div className="shell"><span className="eyebrow">CATÁLOGO NOVAREALM</span><h1>Hardware elegido con criterio.</h1><p>Explora por intención: equipos completos, componentes o periféricos.</p><div className="catalog-sections"><a className={context === "systems" ? "active" : ""} href="/productos?context=systems">🖥️ Equipos</a><a className={context === "components" && !selectedTypes.some((type) => ["MONITOR", "KEYBOARD", "MOUSE", "HEADSET"].includes(type)) ? "active" : ""} href="/productos?context=components&type=CPU&type=GPU&type=RAM&type=MOTHERBOARD&type=STORAGE&type=PSU&type=CASE&type=COOLING">🧩 Componentes</a><a className={context === "components" && selectedTypes.some((type) => ["MONITOR", "KEYBOARD", "MOUSE", "HEADSET"].includes(type)) ? "active" : ""} href="/productos?context=components&type=MONITOR&type=KEYBOARD&type=MOUSE&type=HEADSET">⌨️ Periféricos</a></div></div></section>
+    <section className="catalog-hero"><div className="shell"><span className="eyebrow">CATÁLOGO NOVAREALM</span><h1>{catalogTitle}</h1><p>{catalogDescription}</p><div className="catalog-sections"><Link className={context === "systems" ? "active" : ""} href="/equipos">🖥️ Equipos</Link><Link className={context === "components" ? "active" : ""} href="/componentes">🧩 Componentes</Link><Link className={context === "peripherals" ? "active" : ""} href="/perifericos">⌨️ Periféricos</Link></div></div></section>
     <section className="shell catalog-layout">
       <aside className="filters-panel" aria-label="Filtros del catálogo">
         <div className="filter-heading"><h2>Filtros{activeFilterCount ? <span className="filter-count">{activeFilterCount}</span> : null}</h2><button type="button" onClick={clearFilters}>Limpiar</button></div>

@@ -20,8 +20,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="shell header-inner">
             <Logo />
             <nav className="main-nav" aria-label="Navegación principal">
-              <Link href="/productos?type=PREBUILT_PC">Equipos</Link>
-              <Link href="/productos?context=components">Componentes</Link>
+              <Link href="/equipos">Equipos</Link>
+              <Link href="/componentes">Componentes</Link>
+              <Link href="/perifericos">Periféricos</Link>
               <Link href="/configurador">Armar PC</Link>
               <Link href="/#como-funciona">Cómo funciona</Link>
             </nav>

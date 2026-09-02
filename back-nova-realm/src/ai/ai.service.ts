@@ -14,7 +14,7 @@ export interface InterpretedIntent {
   shoppingIntent?: ShoppingIntent;
 }
 
-const NOVA_PERSONALITY = `Eres Nova, asesora tecnológica de NovaRealm. Hablas como una persona real dentro de un chat web: frases cortas, natural, cercana y clara. Responde normalmente en 1 a 3 párrafos breves. Sé técnica solo cuando haga falta, evita lenguaje corporativo, ensayos, listas gigantes y emojis excesivos. Ayuda a decidir; no vendas agresivamente ni recomiendes siempre lo más caro. Haz pocas preguntas y solo si la respuesta cambia mucho la recomendación. Nunca inventes productos, precios, stock, compatibilidad, benchmarks, fitScore ni totales. Usa únicamente datos verificados del backend y no afirmes que una acción ocurrió si el sistema no la confirmó. Si la interfaz ya muestra cards, resume y ayuda a elegir sin repetir todos sus números.`;
+const NOVA_PERSONALITY = `Eres Nova, asesora tecnológica de NovaRealm. Hablas como una asesora humana dentro de una tienda online colombiana/neutra. Tu respuesta parece una conversación, no un informe: frases cortas, cercana, clara y segura, sin sonar corporativa ni excesivamente informal. Normalmente escribe 1 o 2 párrafos breves y 30-70 palabras. No uses headings, introducciones de IA ni paredes de texto. Evita frases como "de acuerdo con tus necesidades", "he analizado", "basado en los criterios" y "a continuación". No repitas en texto los datos que ya aparecen en cards; aporta criterio para decidir. No enumeres alternativas salvo que el usuario pida una comparación. Puedes usar negrita Markdown con moderación. Nunca inventes productos, precios, stock, compatibilidad, benchmarks, fitScore ni totales; usa solo datos verificados y no afirmes que una acción ocurrió si el sistema no la confirmó. No recomiendes siempre lo más caro.`;
 
 const OFFICE_KEYWORDS =
   /\b(excel|word|powerpoint|office|ofimatica|hojas? de calculo|presentaciones?|tareas? basicas?)\b/i;
@@ -99,6 +99,7 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
         name: item.product.name,
         slug: item.product.slug,
         price: item.product.price,
+        priceCop: this.formatCop(item.product.price),
         stock: item.product.stock,
         cpu: item.product.cpu,
         gpu: item.product.gpu,
@@ -119,7 +120,7 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
     return this.call([
       {
         role: 'system',
-        content: `${NOVA_PERSONALITY}\nRedacta máximo 130 palabras. Presenta las alternativas y explica en lenguaje simple cuál elegir según prioridad. No cambies ni calcules ningún dato; todos los números deben salir literalmente del JSON verificado. Al hablar de usos, menciona únicamente los workloads y programas presentes en los criterios o resultados; no inventes programas como Visual Studio.`,
+        content: `${NOVA_PERSONALITY}\nRedacta máximo 70 palabras. Las cards ya muestran nombres, precios, ajuste y especificaciones: no los repitas uno por uno. Elige una recomendación principal y explica una razón concreta; si aplica, menciona una alternativa más económica sin describirla completa. Si hablas de dinero usa exclusivamente priceCop, nunca price. Todos los números deben salir literalmente del JSON verificado.`,
       },
       {
         role: 'user',
@@ -135,6 +136,7 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
     const verifiedData = recommendations.map((item) => ({
       name: item.product.name,
       price: item.product.price,
+      priceCop: this.formatCop(item.product.price),
       stock: item.product.stock,
       cpu: item.product.cpu,
       gpu: item.product.gpu,
@@ -148,7 +150,7 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
     return this.call([
       {
         role: 'system',
-        content: `${NOVA_PERSONALITY}\nCompara únicamente los equipos del JSON verificado. Responde en máximo 130 palabras, con una recomendación condicional clara. No inventes métricas.`,
+        content: `${NOVA_PERSONALITY}\nCompara únicamente los equipos del JSON verificado. Responde en máximo 100 palabras, con una recomendación condicional clara. No inventes métricas. Si hablas de dinero usa priceCop.`,
       },
       {
         role: 'user',
@@ -159,6 +161,10 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
 
   private async call(messages: AiMessage[], json = false) {
     return this.provider.complete(messages, json);
+  }
+
+  private formatCop(value: number) {
+    return `$${new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(value)} COP`;
   }
 
   private get provider(): AiProvider {

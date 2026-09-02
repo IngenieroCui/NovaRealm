@@ -6,6 +6,7 @@ export class BuilderRequestDto {
   @IsArray() @ArrayMaxSize(12) @IsString({ each: true }) itemSlugs: string[] = [];
   @IsOptional() @IsInt() @Min(0) budgetMax?: number;
   @IsOptional() @IsBoolean() assembly?: boolean;
+  @IsOptional() @IsBoolean() complete?: boolean;
 }
 
 export class ComponentRecommendationRequestDto extends BuilderRequestDto {
@@ -20,13 +21,15 @@ export class AutoBuildRequestDto {
 }
 
 export class BuilderActionDto {
-  @IsIn(['ADD_TO_BUILD', 'REMOVE_FROM_BUILD', 'REPLACE_COMPONENT', 'CLEAR_BUILD', 'ADD_ASSEMBLY', 'REMOVE_ASSEMBLY', 'ADD_PERIPHERAL', 'REMOVE_PERIPHERAL'])
+  @IsIn(['ADD_TO_BUILD', 'REMOVE_FROM_BUILD', 'REPLACE_COMPONENT', 'CLEAR_BUILD', 'ADD_ASSEMBLY', 'REMOVE_ASSEMBLY', 'ADD_PERIPHERAL', 'REMOVE_PERIPHERAL', 'START_GUIDED', 'AUTO_BUILD', 'AUTO_SELECT'])
   action!: string;
   @IsArray() @ArrayMaxSize(12) @IsString({ each: true }) currentSlugs: string[] = [];
   @IsOptional() @IsString() @MaxLength(120) productSlug?: string;
   @IsOptional() @IsInt() productId?: number;
   @IsOptional() @IsEnum(ProductType) componentType?: ProductType;
   @IsOptional() @IsBoolean() assembly?: boolean;
+  @IsOptional() @IsInt() @Min(500000) budgetMax?: number;
+  @IsOptional() @IsIn(['GUIDED', 'AUTO']) mode?: 'GUIDED' | 'AUTO';
 }
 
 export class UpgradePcDto {

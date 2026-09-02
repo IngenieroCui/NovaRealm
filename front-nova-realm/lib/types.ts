@@ -14,6 +14,15 @@ export type ProductType =
   | "HEADSET";
 export type PeripheralType = "MONITOR" | "KEYBOARD" | "MOUSE" | "HEADSET";
 export type ShoppingIntent = "PREBUILT_PC" | "CUSTOM_PC" | "UPGRADE_PC" | "COMPONENT" | "PC_WITH_PERIPHERALS";
+export type BuilderMode = "GUIDED" | "AUTO";
+export interface BuilderFlow {
+  mode: BuilderMode;
+  currentStep: ProductType | "PERIPHERALS" | "ASSEMBLY" | "DONE";
+  currentStepLabel: string;
+  completedSteps: ProductType[];
+  progress: number;
+  totalSteps: number;
+}
 
 export interface Product {
   id: number;
@@ -111,6 +120,7 @@ export interface ChatResponse {
   quickActions?: string[];
   warnings?: string[];
   upgradeAnalysis?: UpgradeAnalysis;
+  flow?: BuilderFlow;
 }
 
 export interface BuildSummary {

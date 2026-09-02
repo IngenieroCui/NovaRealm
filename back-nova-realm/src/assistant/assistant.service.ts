@@ -38,6 +38,26 @@ export class AssistantService {
     // The user-selected intent and these small deterministic cues have priority over
     // an ambiguous model classification; the model is still used for needs/filters.
     const shoppingIntent = detectedIntent;
+    const currentBuild = input.context?.buildSlugs ?? [];
+    const budgetMax = intent.filters?.budgetMax ?? this.extractBudget(input.message);
+    if (this.isFinishRequest(input.message) && currentBuild.length) {
+      const build = await this.builder.summarize({ itemSlugs: currentBuild, budgetMax, assembly: false });
+      return { message: build.products.length === 1 ? 'Listo. Te dejo este producto listo para cotizar.' : 'Listo, dejamos la configuración hasta aquí. Te muestro el resumen para que la revises con calma.', needsMoreInformation: false, shoppingIntent, filters: intent.filters ?? null, recommendations: [], build, quickActions: ['Cotizar por WhatsApp', 'Cambiar una pieza', 'Agregar algo más'] };
+    }
+    if (input.context?.buildSlugs?.length && /ensambl|armado por novarealm/i.test(input.message)) {
+      return { message: 'Valido el servicio de ensamble para tu configuración actual.', needsMoreInformation: false, shoppingIntent: ShoppingIntent.CUSTOM_PC, filters: intent.filters ?? null, recommendations: [], actions: [{ action: 'ADD_ASSEMBLY', label: 'Agregar ensamble' }], quickActions: ['Abrir configurador', 'Cotizar'] };
+    }
+    if (input.context?.buildSlugs?.length && /(?:reinicia|reiniciar|limpia|limpiar|borrar).*(?:config|build|seleccion)/i.test(input.message)) {
+      return { message: 'Listo, puedo dejar la configuración vacía para empezar de nuevo.', needsMoreInformation: false, shoppingIntent: ShoppingIntent.CUSTOM_PC, filters: intent.filters ?? null, recommendations: [], actions: [{ action: 'CLEAR_BUILD', label: 'Reiniciar configuración' }] };
+    }
+    if (contextProduct && /vale la pena|me sirve|sirve para|qué opinas|que opinas/i.test(input.message)) {
+      const note = contextProduct.type === ProductType.PREBUILT_PC
+        ? (Number(contextProduct.gpuScore ?? 0) >= 85 ? 'Tiene un perfil fuerte para jugar y crear.' : 'Tiene un perfil equilibrado para jugar y crear sin irse al extremo.')
+        : contextProduct.type === ProductType.MONITOR
+          ? `Lo importante aquí es que su resolución y refresh rate coincidan con tu uso.`
+          : 'La decisión depende sobre todo de su compatibilidad con el resto de tu equipo y de tu presupuesto.';
+      return { message: `Sí, puedo orientarte sobre ${contextProduct.name}. ${note} Si me dices tu uso principal, te digo si lo elegiría frente a alternativas reales.`, needsMoreInformation: false, shoppingIntent, currentProduct: contextProduct, filters: intent.filters ?? null, recommendations: [], quickActions: ['Comparar similares', 'Cotizar', 'Agregar a build'] };
+    }
     const wantsBuildChange = /\b(pon|agrega|añade|anade|usa|mete|cambia|reemplaza)\b/i.test(input.message);
     if (contextProduct && wantsBuildChange && input.context?.buildSlugs) {
       return {
@@ -51,21 +71,31 @@ export class AssistantService {
       };
     }
     if (shoppingIntent === ShoppingIntent.COMPONENT && componentType) {
-      const componentResult = await this.builder.recommendComponents({ componentType, itemSlugs: [], budgetMax: intent.filters?.budgetMax ?? this.extractBudget(input.message), preference: /potente|mejor|premium/i.test(input.message) ? 'powerful' : /barat|econom/i.test(input.message) ? 'cheaper' : undefined });
-      return { message: contextProduct ? `Estás viendo ${contextProduct.name}. Estas alternativas pueden servirte como comparación.` : componentResult.recommendations.length ? 'Estas son las opciones disponibles que mejor encajan.' : 'Necesito ajustar presupuesto o disponibilidad para encontrar una opción.', needsMoreInformation: false, shoppingIntent, componentType, currentProduct: contextProduct, filters: intent.filters ?? null, recommendations: [], componentRecommendations: componentResult.recommendations, quickActions: ['Más barato', 'Más potente', 'Compararlos', 'Consultar disponibilidad'], warnings: componentResult.warnings };
+      const componentResult = await this.builder.recommendComponents({ componentType, itemSlugs: currentBuild, budgetMax, preference: /potente|mejor|premium/i.test(input.message) ? 'powerful' : /barat|econom/i.test(input.message) ? 'cheaper' : undefined });
+      return { message: contextProduct ? `Estás viendo ${contextProduct.name}. Te dejo alternativas compatibles para comparar.` : componentResult.recommendations.length ? 'Estas opciones encajan con lo que buscas. Elige una y la agregamos aquí mismo.' : 'Necesito ajustar presupuesto o disponibilidad para encontrar una opción.', needsMoreInformation: false, shoppingIntent, componentType, currentProduct: contextProduct, filters: intent.filters ?? null, recommendations: [], componentRecommendations: componentResult.recommendations, quickActions: ['Más barato', 'Más potente', 'Hasta ahí'], warnings: componentResult.warnings, build: currentBuild.length ? await this.builder.summarize({ itemSlugs: currentBuild, budgetMax, assembly: false }) : undefined };
     }
     if (shoppingIntent === ShoppingIntent.COMPONENT) {
       return { message: '¿Qué componente buscas: GPU, CPU, RAM, almacenamiento o monitor?', needsMoreInformation: true, shoppingIntent, filters: intent.filters ?? null, recommendations: [], quickActions: ['GPU', 'CPU', 'RAM', 'Monitor'] };
     }
     if (shoppingIntent === ShoppingIntent.CUSTOM_PC) {
-      const budgetMax = intent.filters?.budgetMax ?? this.extractBudget(input.message);
-      const build = input.context?.buildSlugs?.length
-        ? await this.builder.summarize({ itemSlugs: input.context.buildSlugs, budgetMax, assembly: false })
+      const currentSummary = currentBuild.length ? await this.builder.summarize({ itemSlugs: currentBuild, budgetMax, assembly: false }) : null;
+      const wantsAuto = /(?:recomiend|elige|escoge|armala|ármala|hazla|hazlo|por mi|por mí|configuracion completa|configuración completa)/i.test(input.message);
+      const wantsGuided = /(?:paso a paso|guiar|guiame|guíame|pieza por pieza)/i.test(input.message);
+      if (wantsAuto && !budgetMax) return { message: 'Puedo armarla por ti. ¿Cuál es tu presupuesto máximo aproximado?', needsMoreInformation: true, shoppingIntent, filters: intent.filters ?? null, recommendations: [] };
+      if (!currentBuild.length && !wantsAuto && !wantsGuided && input.context?.builderMode !== 'GUIDED') {
+        return { message: 'Podemos hacerlo pieza por pieza o te propongo una configuración completa. ¿Qué prefieres?', needsMoreInformation: false, shoppingIntent, filters: intent.filters ?? null, recommendations: [], actions: [{ action: 'START_GUIDED', label: 'Guiarme paso a paso' }, { action: 'AUTO_BUILD', label: 'Recomiéndamela completa' }], flow: await this.builder.flow([], 'GUIDED') };
+      }
+      const build = /(?:más barato|mas barato|ahorrar|bajar el precio)/i.test(input.message) && currentSummary
+        ? await this.builder.autoBuild({ budgetMax: Math.max(500000, Math.min(budgetMax ?? currentSummary.total, currentSummary.total - 300000)), assembly: false })
+        : currentBuild.length
+        ? await this.builder.summarize({ itemSlugs: currentBuild, budgetMax, assembly: false })
         : budgetMax
           ? await this.builder.autoBuild({ budgetMax, workloadSlugs: intent.filters?.workloads.map((item) => item.slug), assembly: false })
           : await this.builder.summarize({ itemSlugs: [], budgetMax, assembly: false });
-      const alternatives = componentType ? await this.builder.recommendComponents({ componentType, itemSlugs: input.context?.buildSlugs ?? [], budgetMax: build.budgetRemaining && build.budgetRemaining > 0 ? build.budgetRemaining : undefined, preference: /potente|mejor/i.test(input.message) ? 'powerful' : /barat|econom/i.test(input.message) ? 'cheaper' : undefined }) : null;
-      return { message: alternatives?.recommendations.length ? `Estas son alternativas compatibles para ${componentType}.` : build.products.length ? 'Listo: armé una base compatible con tu presupuesto. Puedes ajustar cualquier pieza.' : 'Dime el presupuesto y el uso; con eso te propongo los componentes compatibles.', needsMoreInformation: !budgetMax, shoppingIntent, filters: intent.filters ?? null, recommendations: [], componentRecommendations: alternatives?.recommendations, build, quickActions: ['Abrir configurador', 'Recomendar CPU', 'Recomendar GPU', 'Hacerlo más barato', 'Agregar ensamble'] };
+      const nextStep = (await this.builder.flow(currentBuild, input.context?.builderMode ?? (wantsAuto ? 'AUTO' : 'GUIDED'))).currentStep;
+      const requestedType = componentType ?? (nextStep === 'DONE' ? undefined : nextStep as ProductType);
+      const alternatives = requestedType ? await this.builder.recommendComponents({ componentType: requestedType, itemSlugs: currentBuild, budgetMax: build.budgetRemaining && build.budgetRemaining > 0 ? build.budgetRemaining : budgetMax, preference: /potente|mejor/i.test(input.message) ? 'powerful' : /barat|econom/i.test(input.message) ? 'cheaper' : undefined }) : null;
+      return { message: alternatives?.recommendations.length ? (componentType ? `Te muestro opciones compatibles para ${this.productTypeLabel(componentType)}.` : `Sigamos con ${this.productTypeLabel(requestedType as ProductType)}. Te muestro solo opciones compatibles.`) : build.products.length ? 'Listo, ya tienes una base compatible. Puedes ajustar cualquier pieza desde aquí.' : 'Dime el presupuesto y el uso; con eso te propongo los componentes compatibles.', needsMoreInformation: !budgetMax, shoppingIntent, filters: intent.filters ?? null, recommendations: [], componentRecommendations: alternatives?.recommendations, build, flow: await this.builder.flow(build.products.map((product) => product.slug), input.context?.builderMode ?? (wantsAuto ? 'AUTO' : 'GUIDED')), actions: alternatives?.recommendations.length && requestedType ? [{ action: 'AUTO_SELECT', componentType: requestedType, label: 'Que Nova elija' }] : undefined, quickActions: ['Más barato', 'Cambiar una pieza', 'Agregar periféricos', 'Agregar ensamble', 'Cotizar'] };
     }
     if (shoppingIntent === ShoppingIntent.UPGRADE_PC) {
       const currentPc = this.extractCurrentPc(input.message);
@@ -151,6 +181,10 @@ export class AssistantService {
     const explicit = message.match(/(?:\$|cop\s*)([\d.,]{6,})/i)?.[1];
     return explicit ? Number(explicit.replace(/[.,]/g, '')) : undefined;
   }
+
+  private isFinishRequest(message: string) { return /\b(hasta ahi|hasta ahí|eso es todo|ya|terminar|finalizar|no necesito mas|no necesito más|con eso)\b/i.test(this.normalize(message)); }
+
+  private productTypeLabel(type: ProductType) { return ({ CPU: 'el procesador', MOTHERBOARD: 'la motherboard', RAM: 'la memoria RAM', GPU: 'la tarjeta gráfica', STORAGE: 'el almacenamiento', PSU: 'la fuente', COOLING: 'la refrigeración', CASE: 'el chasis', MONITOR: 'el monitor', KEYBOARD: 'el teclado', MOUSE: 'el mouse', HEADSET: 'el headset' } as Partial<Record<ProductType, string>>)[type] ?? 'el siguiente componente'; }
 
   async compare(input: CompareRequestDto) {
     const result = await this.recommendations.recommend(input.filters);

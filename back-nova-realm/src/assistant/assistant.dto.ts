@@ -34,6 +34,7 @@ export class AssistantContextDto {
   @IsOptional() @IsArray() @ArrayMaxSize(12) @IsString({ each: true }) buildSlugs?: string[];
   @IsOptional() @IsIn(Object.values(ShoppingIntent)) shoppingIntent?: ShoppingIntent;
   @IsOptional() @IsString() @MaxLength(120) selectedComponentType?: string;
+  @IsOptional() @IsIn(['GUIDED', 'AUTO']) builderMode?: 'GUIDED' | 'AUTO';
 }
 
 export class ChatRequestDto {

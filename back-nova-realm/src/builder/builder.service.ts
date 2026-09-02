@@ -13,6 +13,17 @@ export interface CompatibilityIssue {
 
 const COMPONENT_TYPES = [ProductType.CPU, ProductType.MOTHERBOARD, ProductType.RAM, ProductType.GPU, ProductType.STORAGE, ProductType.PSU, ProductType.COOLING, ProductType.CASE];
 const PERIPHERAL_TYPES = [ProductType.MONITOR, ProductType.KEYBOARD, ProductType.MOUSE, ProductType.HEADSET];
+const GUIDED_STEPS = [...COMPONENT_TYPES];
+
+export type BuilderMode = 'GUIDED' | 'AUTO';
+export interface BuilderFlow {
+  mode: BuilderMode;
+  currentStep: ProductType | 'PERIPHERALS' | 'ASSEMBLY' | 'DONE';
+  currentStepLabel: string;
+  completedSteps: ProductType[];
+  progress: number;
+  totalSteps: number;
+}
 
 @Injectable()
 export class BuilderService {
@@ -53,7 +64,7 @@ export class BuilderService {
     const peripherals = products.filter((product) => PERIPHERAL_TYPES.includes(product.type));
     const subtotal = products.reduce((total, product) => total + product.price, 0);
     const assembly = input.assembly && settings.assemblyEnabled ? settings.assemblyPrice : 0;
-    const compatibilityIssues = this.compatibilityIssues(components, true);
+    const compatibilityIssues = this.compatibilityIssues(components, input.complete ?? false);
     const warnings = compatibilityIssues.map((issue) => issue.message);
     if (input.budgetMax && subtotal + assembly > input.budgetMax) warnings.push(`La configuración supera el presupuesto en ${subtotal + assembly - input.budgetMax} COP.`);
     return { products, components, peripherals, subtotal, assembly, total: subtotal + assembly, budgetRemaining: input.budgetMax ? input.budgetMax - subtotal - assembly : null, assemblyEnabled: settings.assemblyEnabled, warnings, compatibilityIssues, compatible: !compatibilityIssues.some((issue) => issue.severity === 'ERROR') };
@@ -81,7 +92,20 @@ export class BuilderService {
 
   async applyAction(input: BuilderActionDto) {
     const current = [...new Set(input.currentSlugs)];
-    const target = input.productSlug ? await this.catalog.findBySlug(input.productSlug) : input.productId ? await this.catalog.findAll({ inStock: true }).then((items) => items.find((item) => item.id === input.productId)) : undefined;
+    let target = input.productSlug ? await this.catalog.findBySlug(input.productSlug) : input.productId ? await this.catalog.findAll({ inStock: true }).then((items) => items.find((item) => item.id === input.productId)) : undefined;
+    if (input.action === 'START_GUIDED') {
+      const summary = await this.summarize({ itemSlugs: current, budgetMax: input.budgetMax, assembly: false });
+      return { action: input.action, product: null, summary, flow: await this.flow(current, 'GUIDED'), recommendations: await this.nextRecommendations(current, input.budgetMax) };
+    }
+    if (input.action === 'AUTO_BUILD') {
+      const summary = await this.autoBuild({ budgetMax: input.budgetMax ?? 500000, assembly: input.assembly ?? false });
+      return { action: input.action, product: null, summary, flow: await this.flow(summary.products.map((item) => item.slug), 'AUTO'), recommendations: [] };
+    }
+    if (input.action === 'AUTO_SELECT') {
+      if (!input.componentType) throw new BadRequestException('Indica el tipo de componente que Nova debe elegir.');
+      const result = await this.recommendComponents({ componentType: input.componentType, itemSlugs: current, budgetMax: input.budgetMax, preference: 'powerful' });
+      target = result.recommendations[0];
+    }
     if (input.action !== 'CLEAR_BUILD' && input.action !== 'ADD_ASSEMBLY' && input.action !== 'REMOVE_ASSEMBLY' && !target) throw new BadRequestException('No encontré el producto para actualizar la configuración.');
     let slugs = current;
     if (input.action === 'CLEAR_BUILD') slugs = [];
@@ -96,7 +120,30 @@ export class BuilderService {
     }
     if (input.action === 'REMOVE_FROM_BUILD' || input.action === 'REMOVE_PERIPHERAL') slugs = target ? slugs.filter((slug) => slug !== target.slug) : slugs;
     const assembly = input.action === 'ADD_ASSEMBLY' ? true : input.action === 'REMOVE_ASSEMBLY' ? false : input.assembly ?? false;
-    return { action: input.action, product: target ?? null, summary: await this.summarize({ itemSlugs: slugs, assembly }) };
+    const summary = await this.summarize({ itemSlugs: slugs, budgetMax: input.budgetMax, assembly });
+    return { action: input.action, product: target ?? null, summary, flow: await this.flow(slugs, input.mode ?? 'GUIDED'), recommendations: await this.nextRecommendations(slugs, input.budgetMax) };
+  }
+
+  private async nextRecommendations(slugs: string[], budgetMax?: number) {
+    const step = (await this.flow(slugs, 'GUIDED')).currentStep;
+    if (!GUIDED_STEPS.includes(step as ProductType)) return [];
+    return (await this.recommendComponents({ componentType: step as ProductType, itemSlugs: slugs, budgetMax })).recommendations;
+  }
+
+  async flow(slugs: string[], mode: BuilderMode = 'GUIDED'): Promise<BuilderFlow> {
+    const products = await this.products(slugs);
+    const selectedTypes = new Set(products.map((product) => product.type));
+    const completed = GUIDED_STEPS.filter((type) => selectedTypes.has(type));
+    const current = GUIDED_STEPS.find((type) => !completed.includes(type)) ?? 'DONE';
+    const totalSteps = GUIDED_STEPS.length;
+    return {
+      mode,
+      currentStep: current,
+      currentStepLabel: current === 'DONE' ? 'Configuración lista' : current === 'MOTHERBOARD' ? 'Motherboard' : current === 'RAM' ? 'Memoria RAM' : current === 'GPU' ? 'Tarjeta gráfica' : current === 'PSU' ? 'Fuente' : current === 'STORAGE' ? 'Almacenamiento' : current === 'COOLING' ? 'Refrigeración' : current === 'CASE' ? 'Chasis' : 'Procesador',
+      completedSteps: completed,
+      progress: Math.round((completed.length / totalSteps) * 100),
+      totalSteps,
+    };
   }
 
   async analyzeUpgrade(input: UpgradePcDto) {
@@ -120,7 +167,7 @@ export class BuilderService {
       bestFirstUpgrade: first ?? null,
       bestValue: value ?? null,
       premium: premium ?? null,
-      noNeedToChange: priorityType === ProductType.GPU ? 'El Ryzen 5 5600 todavía tiene sentido para este objetivo.' : 'La GPU actual puede esperar mientras mejoras el procesador o la memoria.',
+      noNeedToChange: priorityType === ProductType.GPU ? `${input.cpu ?? 'Tu procesador actual'} todavía tiene sentido para este objetivo.` : `${input.gpu ?? 'Tu GPU actual'} puede esperar mientras mejoras el procesador o la memoria.`,
       recommendations: options.slice(0, 4),
     };
   }
