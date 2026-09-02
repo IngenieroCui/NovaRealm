@@ -8,6 +8,19 @@ import { BuilderService } from '../builder/builder.service';
 import { Product, ProductType } from '../catalog/product.types';
 import { CatalogService } from '../catalog/catalog.service';
 
+const WINDOWS_SPECS_COMMAND = `$cpu=(Get-CimInstance Win32_Processor).Name; $gpu=(Get-CimInstance Win32_VideoController).Name -join ', '; $ram=[math]::Round(((Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum).Sum/1GB)); $board=(Get-CimInstance Win32_BaseBoard | ForEach-Object { $_.Manufacturer + ' ' + $_.Product }) -join ', '; $disk=(Get-CimInstance Win32_DiskDrive).Model -join ', '; [pscustomobject]@{ CPU=$cpu; GPU=$gpu; RAM="$ram GB"; Motherboard=$board; Storage=$disk } | Format-List`;
+
+const SYSTEM_INFO_GUIDE = {
+  title: 'Obtener las especificaciones en Windows',
+  command: WINDOWS_SPECS_COMMAND,
+  steps: [
+    'Haz clic derecho en Inicio y abre Terminal o PowerShell. No necesitas permisos de administrador.',
+    'Copia y pega el comando, presiona Enter y espera unos segundos.',
+    'Copia aquí el resultado. El comando solo lee nombres de hardware; no cambia nada ni muestra archivos personales.',
+  ],
+  note: 'La fuente de poder no aparece en Windows. Si luego recomendamos una GPU, te pediré mirar la etiqueta de la fuente o enviar su modelo.',
+};
+
 @Injectable()
 export class AssistantService {
   constructor(
@@ -27,7 +40,7 @@ export class AssistantService {
       : input.message;
     const componentType = this.detectComponentType(input.message, input.context);
     const detectedIntent = input.shoppingIntent ?? input.context?.shoppingIntent ?? this.detectShoppingIntent(input.message);
-    const intent = [ShoppingIntent.COMPONENT, ShoppingIntent.UPGRADE_PC].includes(detectedIntent)
+    const intent = detectedIntent === ShoppingIntent.UPGRADE_PC
       ? { needsMoreInformation: true, filters: input.filters }
       : await this.ai.interpret(
           analysisMessage,
@@ -71,13 +84,26 @@ export class AssistantService {
       };
     }
     if (shoppingIntent === ShoppingIntent.COMPONENT && componentType) {
+      if (!intent.filters?.workloads?.length) {
+        return { message: `Antes de mostrarte ${this.productTypeLabel(componentType)}, cuéntame qué quieres mejorar o qué juego/programa usarás. Así no te vendo una pieza más cara de lo necesario.`, needsMoreInformation: true, shoppingIntent, componentType, filters: intent.filters ?? null, recommendations: [], quickActions: ['Gaming', 'Trabajo y estudio', 'Edición o diseño', 'Uso general'] };
+      }
+      if (!budgetMax) {
+        return { message: `Ya entiendo el uso. ¿Cuánto te gustaría gastar como máximo en ${this.productTypeLabel(componentType)}? Un valor aproximado está bien.`, needsMoreInformation: true, shoppingIntent, componentType, filters: intent.filters ?? null, recommendations: [], quickActions: ['$500.000 COP', '$1.000.000 COP', '$2.000.000 COP'] };
+      }
       const componentResult = await this.builder.recommendComponents({ componentType, itemSlugs: currentBuild, budgetMax, preference: /potente|mejor|premium/i.test(input.message) ? 'powerful' : /barat|econom/i.test(input.message) ? 'cheaper' : undefined });
-      return { message: contextProduct ? `Estás viendo ${contextProduct.name}. Te dejo alternativas compatibles para comparar.` : componentResult.recommendations.length ? 'Estas opciones encajan con lo que buscas. Elige una y la agregamos aquí mismo.' : 'Necesito ajustar presupuesto o disponibilidad para encontrar una opción.', needsMoreInformation: false, shoppingIntent, componentType, currentProduct: contextProduct, filters: intent.filters ?? null, recommendations: [], componentRecommendations: componentResult.recommendations, quickActions: ['Más barato', 'Más potente', 'Hasta ahí'], warnings: componentResult.warnings, build: currentBuild.length ? await this.builder.summarize({ itemSlugs: currentBuild, budgetMax, assembly: false }) : undefined };
+      const lead = componentResult.recommendations[0];
+      return { message: contextProduct ? `Estás viendo ${contextProduct.name}. Comparé alternativas disponibles dentro de tu presupuesto y compatibles con lo que ya llevas en la configuración.` : lead ? `Yo empezaría por ${lead.name}. Es la primera opción que revisaría para tu uso y presupuesto; antes de comprar, confirmemos motherboard, fuente y espacio físico si no están en tu configuración.` : 'No encontré una opción responsable dentro de ese presupuesto. Prefiero ajustar el límite contigo antes que recomendarte algo que no encaje.', needsMoreInformation: false, shoppingIntent, componentType, currentProduct: contextProduct, filters: intent.filters ?? null, recommendations: [], componentRecommendations: componentResult.recommendations, quickActions: ['Más barato', 'Más potente', 'Revisar compatibilidad', 'Hasta ahí'], warnings: componentResult.warnings, build: currentBuild.length ? await this.builder.summarize({ itemSlugs: currentBuild, budgetMax, assembly: false }) : undefined };
     }
     if (shoppingIntent === ShoppingIntent.COMPONENT) {
       return { message: '¿Qué componente buscas: GPU, CPU, RAM, almacenamiento o monitor?', needsMoreInformation: true, shoppingIntent, filters: intent.filters ?? null, recommendations: [], quickActions: ['GPU', 'CPU', 'RAM', 'Monitor'] };
     }
     if (shoppingIntent === ShoppingIntent.CUSTOM_PC) {
+      if (!intent.filters?.workloads?.length) {
+        return { message: intent.question ?? 'Primero quiero entender para qué la vas a usar. ¿Qué juegos, programas o tareas son los más importantes para ti?', needsMoreInformation: true, shoppingIntent, filters: intent.filters ?? null, recommendations: [], quickActions: ['Gaming', 'Edición y diseño', 'Programación', 'Trabajo y estudio'] };
+      }
+      if (!budgetMax) {
+        return { message: 'Perfecto, ya sé qué rendimiento buscar. ¿Cuál es el presupuesto máximo para la torre? Si también necesitas monitor o periféricos, dímelo para separar bien el dinero.', needsMoreInformation: true, shoppingIntent, filters: intent.filters ?? null, recommendations: [], quickActions: ['$3 millones', '$5 millones', '$7 millones'] };
+      }
       const currentSummary = currentBuild.length ? await this.builder.summarize({ itemSlugs: currentBuild, budgetMax, assembly: false }) : null;
       const wantsAuto = /(?:recomiend|elige|escoge|armala|ármala|hazla|hazlo|por mi|por mí|configuracion completa|configuración completa)/i.test(input.message);
       const wantsGuided = /(?:paso a paso|guiar|guiame|guíame|pieza por pieza)/i.test(input.message);
@@ -98,9 +124,21 @@ export class AssistantService {
       return { message: alternatives?.recommendations.length ? (componentType ? `Te muestro opciones compatibles para ${this.productTypeLabel(componentType)}.` : `Sigamos con ${this.productTypeLabel(requestedType as ProductType)}. Te muestro solo opciones compatibles.`) : build.products.length ? 'Listo, ya tienes una base compatible. Puedes ajustar cualquier pieza desde aquí.' : 'Dime el presupuesto y el uso; con eso te propongo los componentes compatibles.', needsMoreInformation: !budgetMax, shoppingIntent, filters: intent.filters ?? null, recommendations: [], componentRecommendations: alternatives?.recommendations, build, flow: await this.builder.flow(build.products.map((product) => product.slug), input.context?.builderMode ?? (wantsAuto ? 'AUTO' : 'GUIDED')), actions: alternatives?.recommendations.length && requestedType ? [{ action: 'AUTO_SELECT', componentType: requestedType, label: 'Que Nova elija' }] : undefined, quickActions: ['Más barato', 'Cambiar una pieza', 'Agregar periféricos', 'Agregar ensamble', 'Cotizar'] };
     }
     if (shoppingIntent === ShoppingIntent.UPGRADE_PC) {
-      const currentPc = this.extractCurrentPc(input.message);
-      const upgrade = await this.builder.analyzeUpgrade({ ...currentPc, goal: this.extractUpgradeGoal(input.message), budgetMax: intent.filters?.budgetMax ?? this.extractBudget(input.message) });
-      return { message: upgrade.bestFirstUpgrade ? `Para ${upgrade.goal}, yo empezaría por ${upgrade.priority === ProductType.GPU ? 'la GPU' : 'el procesador'}. ${upgrade.noNeedToChange}` : 'Puedo analizarlo, pero necesito identificar al menos tu CPU o GPU actual.', needsMoreInformation: !currentPc.cpu && !currentPc.gpu, shoppingIntent, currentPc, upgradeAnalysis: upgrade, filters: intent.filters ?? null, recommendations: [], upgradeRecommendations: upgrade.recommendations, quickActions: ['Ver opciones baratas', 'Comparar', 'Abrir configurador'] };
+      const currentPc = this.mergeCurrentPc(input.context?.currentPc, this.extractCurrentPc(input.message));
+      const missing = [!currentPc.cpu && 'procesador', !currentPc.gpu && 'tarjeta gráfica', !currentPc.ramGb && 'memoria RAM'].filter(Boolean) as string[];
+      const upgradeGoal = this.extractUpgradeGoal(input.message) ?? input.context?.upgradeGoal;
+      if (missing.length) {
+        return { message: `Para decirte qué vale la pena cambiar necesito ver tu equipo actual. Te dejo una forma fácil de obtenerlo; si prefieres, también puedes escribir los datos a mano. Me falta: ${missing.join(', ')}.`, needsMoreInformation: true, shoppingIntent, currentPc, upgradeGoal: upgradeGoal ?? null, systemInfoGuide: SYSTEM_INFO_GUIDE, filters: intent.filters ?? null, recommendations: [], quickActions: ['Prefiero escribirlos', '¿Dónde miro la fuente?'] };
+      }
+      if (!upgradeGoal) {
+        return { message: 'Gracias, ya tengo la base del equipo. Ahora cuéntame qué te está molestando o qué quieres lograr: menciona juegos o programas, resolución/FPS si juegas y si notas lentitud, tirones o falta de espacio.', needsMoreInformation: true, shoppingIntent, currentPc, filters: intent.filters ?? null, recommendations: [], quickActions: ['Más FPS en juegos', 'Editar y renderizar', 'Multitarea', 'Me falta espacio'] };
+      }
+      if (!budgetMax) {
+        return { message: `Entiendo el objetivo: ${upgradeGoal}. ¿Cuál es el máximo que invertirías ahora? Con eso separo la mejora imprescindible de la que puede esperar.`, needsMoreInformation: true, shoppingIntent, currentPc, upgradeGoal, filters: intent.filters ?? null, recommendations: [], quickActions: ['$1 millón', '$2 millones', '$3 millones'] };
+      }
+      const upgrade = await this.builder.analyzeUpgrade({ ...currentPc, goal: upgradeGoal, budgetMax });
+      const priorityLabel = upgrade.priority === ProductType.GPU ? 'la tarjeta gráfica' : upgrade.priority === ProductType.RAM ? 'la memoria RAM' : upgrade.priority === ProductType.STORAGE ? 'el almacenamiento' : 'el procesador';
+      return { message: upgrade.bestFirstUpgrade ? `Yo empezaría por ${priorityLabel}. ${upgrade.bottleneck} ${upgrade.assessment} No compraría todavía: primero revisaría las comprobaciones de compatibilidad de abajo.` : `No encontré una mejora suficientemente clara dentro de ${budgetMax} COP. Prefiero que conserves el dinero o ajustemos el objetivo antes que venderte un cambio pequeño.`, needsMoreInformation: false, shoppingIntent, currentPc, upgradeGoal, upgradeAnalysis: upgrade, filters: intent.filters ?? null, recommendations: [], upgradeRecommendations: upgrade.recommendations, quickActions: ['Ver opciones baratas', 'Cambiar presupuesto', 'Revisar compatibilidad'] };
     }
     if (intent.needsMoreInformation || !intent.filters) {
       return {
@@ -166,13 +204,35 @@ export class AssistantService {
 
   private extractCurrentPc(message: string) {
     const normalized = this.normalize(message);
-    const ram = normalized.match(/(\d+)\s*gb(?:\s*(?:de\s*)?(?:ram|memoria))?/)?.[1];
-    return { cpu: message.match(/(?:ryzen|intel)[^,.?]*/i)?.[0]?.trim() ?? null, gpu: message.match(/(?:rtx|gtx|radeon|rx)[^,.?]*/i)?.[0]?.trim() ?? null, ramGb: ram ? Number(ram) : null };
+    const labeled = (label: string) => message.match(new RegExp(`(?:^|\\n)\\s*(?:${label})\\s*:\\s*([^\\n]+)`, 'i'))?.[1]?.trim();
+    const ram = labeled('RAM')?.match(/(\d+)/)?.[1] ?? normalized.match(/(\d+)\s*gb(?:\s*(?:de\s*)?(?:ram|memoria))/)?.[1];
+    const psu = normalized.match(/(?:fuente|psu)[^\d]{0,20}(\d{3,4})\s*w/)?.[1];
+    return {
+      cpu: labeled('CPU') ?? message.match(/(?:amd\s+)?ryzen\s+[^,\n.?]+|intel(?:\(r\))?\s+(?:core\s+)?[^,\n.?]+/i)?.[0]?.trim() ?? null,
+      gpu: labeled('GPU') ?? message.match(/(?:geforce\s+)?(?:rtx|gtx)\s*[^,\n.?]+|(?:radeon\s+)?rx\s*[^,\n.?]+/i)?.[0]?.trim() ?? null,
+      ramGb: ram ? Number(ram) : null,
+      motherboard: labeled('Motherboard|Board|Placa') ?? null,
+      storage: labeled('Storage|Almacenamiento|Disco') ?? null,
+      psuW: psu ? Number(psu) : null,
+    };
   }
 
   private extractUpgradeGoal(message: string) {
-    const match = message.match(/(?:quiero|para|busco)\s+([^?.!]+)/i);
-    return (match?.[1] ?? message).trim().slice(0, 120) || 'mejor rendimiento general';
+    const normalized = this.normalize(message);
+    if (!/(jugar|fps|render|editar|edicion|blender|premiere|docker|virtual|multitarea|lento|tiron|espacio|almacenamiento|stream)/.test(normalized)) return undefined;
+    const match = message.match(/(?:quiero|para|busco|necesito)\s+([^?.!]+)/i);
+    return (match?.[1] ?? message).trim().slice(0, 160);
+  }
+
+  private mergeCurrentPc(previous: AssistantContextDto['currentPc'], next: ReturnType<AssistantService['extractCurrentPc']>) {
+    return {
+      cpu: next.cpu ?? previous?.cpu ?? null,
+      gpu: next.gpu ?? previous?.gpu ?? null,
+      ramGb: next.ramGb ?? previous?.ramGb ?? null,
+      motherboard: next.motherboard ?? previous?.motherboard ?? null,
+      storage: next.storage ?? previous?.storage ?? null,
+      psuW: next.psuW ?? previous?.psuW ?? null,
+    };
   }
 
   private extractBudget(message: string) {

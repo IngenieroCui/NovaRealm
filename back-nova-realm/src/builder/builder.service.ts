@@ -152,24 +152,102 @@ export class BuilderService {
     const gpuScore = this.matchHardwareScore(products, ProductType.GPU, input.gpu);
     const goal = input.goal.toLowerCase();
     const gaming1440 = /1440|2k|qhd/.test(goal);
-    const priorityType = gaming1440 && (gpuScore ?? 0) < (cpuScore ?? 100) + 10 ? ProductType.GPU : (cpuScore ?? 0) < 75 ? ProductType.CPU : ProductType.GPU;
-    const options = products.filter((product) => product.type === priorityType && (!input.budgetMax || product.price <= input.budgetMax)).sort((a, b) => this.scoreForType(b, priorityType) - this.scoreForType(a, priorityType) || a.price - b.price);
-    const currentScore = priorityType === ProductType.GPU ? gpuScore ?? 0 : cpuScore ?? 0;
-    const meaningfulUpgrades = options.filter((product) => this.scoreForType(product, priorityType) > currentScore + 5);
+    const memoryHeavy = /edicion|editar|blender|render|maquina virtual|virtual machine|docker|after effects|premiere/.test(goal);
+    const storageHeavy = /espacio|almacenamiento|disco lleno|guardar mas/.test(goal);
+    const priorityType = storageHeavy
+      ? ProductType.STORAGE
+      : (input.ramGb ?? 0) < (memoryHeavy ? 32 : 16)
+        ? ProductType.RAM
+        : gaming1440
+          ? ProductType.GPU
+          : cpuScore !== null && gpuScore !== null
+            ? cpuScore + 10 < gpuScore ? ProductType.CPU : ProductType.GPU
+            : cpuScore !== null
+              ? cpuScore < 75 ? ProductType.CPU : ProductType.GPU
+              : gpuScore !== null
+                ? gpuScore < 80 ? ProductType.GPU : ProductType.CPU
+                : /render|blender|jugar|calidad grafica/.test(goal) ? ProductType.GPU : ProductType.CPU;
+    const options = products.filter((product) => product.type === priorityType && (!input.budgetMax || product.price <= input.budgetMax) && this.upgradeCandidateCompatible(product, priorityType, input)).sort((a, b) => this.scoreForType(b, priorityType) - this.scoreForType(a, priorityType) || a.price - b.price);
+    const currentScore = priorityType === ProductType.GPU ? gpuScore ?? 0 : priorityType === ProductType.RAM ? input.ramGb ?? 0 : priorityType === ProductType.STORAGE ? 0 : cpuScore ?? 0;
+    const improvementThreshold = priorityType === ProductType.RAM ? 8 : 5;
+    const meaningfulUpgrades = options.filter((product) => this.scoreForType(product, priorityType) > currentScore + improvementThreshold);
     const first = [...meaningfulUpgrades].sort((a, b) => a.price - b.price)[0] ?? options[0];
     const value = [...meaningfulUpgrades].sort((a, b) => (this.scoreForType(b, priorityType) - currentScore) / b.price - (this.scoreForType(a, priorityType) - currentScore) / a.price)[0] ?? options[0];
     const premium = options[0];
+    const bottleneck = this.upgradeBottleneck(cpuScore, gpuScore, input.ramGb, goal);
+    const compatibilityChecks = [
+      priorityType === ProductType.CPU
+        ? { status: 'VERIFY', label: 'Motherboard y socket', detail: input.motherboard ? `Hay que confirmar que ${input.motherboard} use el socket del procesador elegido y que su BIOS sea compatible.` : 'Necesito el modelo de la motherboard para confirmar socket y BIOS.' }
+        : null,
+      priorityType === ProductType.GPU
+        ? { status: input.psuW ? 'CHECKED' : 'VERIFY', label: 'Fuente de poder', detail: input.psuW ? `La fuente reportada es de ${input.psuW} W; antes de comprar validaré potencia, conectores y calidad contra la GPU elegida.` : 'Windows no puede detectar la fuente. Revisa la etiqueta lateral para confirmar potencia, modelo y conectores.' }
+        : null,
+      priorityType === ProductType.RAM
+        ? { status: this.inferMemoryType(input.motherboard) ? 'CHECKED' : 'VERIFY', label: 'Tipo y ranuras de memoria', detail: this.inferMemoryType(input.motherboard) ? `Filtré el catálogo a ${this.inferMemoryType(input.motherboard)}, según la motherboard reportada. Aún hay que confirmar ranuras libres y capacidad máxima.` : 'Necesito el modelo de la motherboard para confirmar DDR4/DDR5 y ranuras libres.' }
+        : null,
+      priorityType === ProductType.STORAGE
+        ? { status: 'VERIFY', label: 'Interfaz y espacio disponible', detail: input.motherboard ? `Antes de elegir entre NVMe y SATA, confirma que ${input.motherboard} tenga un puerto o conector libre.` : 'Necesito el modelo de la motherboard para confirmar si hay un M.2 o un puerto SATA libre.' }
+        : null,
+    ].filter(Boolean);
     return {
-      currentPc: { cpu: input.cpu ?? null, gpu: input.gpu ?? null, ramGb: input.ramGb ?? null },
+      currentPc: { cpu: input.cpu ?? null, gpu: input.gpu ?? null, ramGb: input.ramGb ?? null, motherboard: input.motherboard ?? null, storage: input.storage ?? null, psuW: input.psuW ?? null },
       goal: input.goal,
       detectedScores: { cpu: cpuScore, gpu: gpuScore, ramGb: input.ramGb ?? null },
       priority: priorityType,
+      bottleneck,
+      assessment: this.upgradeAssessment(priorityType, input, cpuScore, gpuScore),
+      compatibilityChecks,
       bestFirstUpgrade: first ?? null,
       bestValue: value ?? null,
       premium: premium ?? null,
-      noNeedToChange: priorityType === ProductType.GPU ? `${input.cpu ?? 'Tu procesador actual'} todavía tiene sentido para este objetivo.` : `${input.gpu ?? 'Tu GPU actual'} puede esperar mientras mejoras el procesador o la memoria.`,
+      noNeedToChange: priorityType === ProductType.GPU ? `${input.cpu ?? 'Tu procesador actual'} todavía puede acompañar esta mejora.` : [ProductType.RAM, ProductType.STORAGE].includes(priorityType) ? 'No cambiaría CPU ni GPU antes de resolver este límite y volver a medir el rendimiento.' : `${input.gpu ?? 'Tu GPU actual'} puede esperar mientras mejoras el procesador.`,
       recommendations: options.slice(0, 4),
     };
+  }
+
+  private upgradeBottleneck(cpuScore: number | null, gpuScore: number | null, ramGb: number | null | undefined, goal: string) {
+    if ((ramGb ?? 0) < (/blender|render|edicion|docker|virtual/.test(goal) ? 32 : 16)) return 'La memoria es el límite más claro para el uso que describes.';
+    if (cpuScore === null || gpuScore === null) return 'Puedo orientar la compra, pero no cuantificar el cuello de botella porque uno de los componentes no está en el catálogo de referencia.';
+    if (cpuScore + 12 < gpuScore) return 'El procesador está bastante por detrás de la GPU y puede limitar estabilidad y FPS altos.';
+    if (gpuScore + 12 < cpuScore) return 'La GPU es el límite más probable, especialmente al subir resolución o calidad gráfica.';
+    return 'CPU y GPU se ven razonablemente equilibrados; la mejora debe enfocarse en el objetivo concreto, no en cambiar piezas por cambiar.';
+  }
+
+  private upgradeAssessment(priority: ProductType, input: UpgradePcDto, cpuScore: number | null, gpuScore: number | null) {
+    const known = cpuScore !== null && gpuScore !== null;
+    const target = priority === ProductType.GPU ? 'tarjeta gráfica' : priority === ProductType.RAM ? 'memoria RAM' : priority === ProductType.STORAGE ? 'almacenamiento' : 'procesador';
+    return `Empezaría por la ${target}. ${known ? 'Comparé el equilibrio relativo de CPU y GPU con el objetivo indicado.' : 'La recomendación es prudente porque no pude puntuar todo el hardware actual.'} ${input.budgetMax ? 'Las opciones respetan el presupuesto máximo.' : 'Falta un presupuesto para ordenar las opciones por valor real.'}`;
+  }
+
+  private upgradeCandidateCompatible(product: Product, priority: ProductType, input: UpgradePcDto) {
+    if (priority === ProductType.CPU) {
+      const socket = this.inferSocket(input.motherboard);
+      return !socket || !product.technicalSpecs.socket || product.technicalSpecs.socket === socket;
+    }
+    if (priority === ProductType.RAM) {
+      const memoryType = this.inferMemoryType(input.motherboard);
+      return !memoryType || !product.technicalSpecs.memoryType || product.technicalSpecs.memoryType === memoryType;
+    }
+    if (priority === ProductType.GPU && input.psuW) {
+      return Number(product.technicalSpecs.tdpW ?? 160) + 250 <= input.psuW;
+    }
+    if (priority === ProductType.STORAGE) return (product.storageGb ?? 0) >= 1000;
+    return true;
+  }
+
+  private inferSocket(motherboard?: string | null) {
+    const value = motherboard?.toLowerCase() ?? '';
+    if (/b650|x670|am5/.test(value)) return 'AM5';
+    if (/b550|a520|x570|am4/.test(value)) return 'AM4';
+    if (/b760|z790|h610|lga\s*1700/.test(value)) return 'LGA1700';
+    return null;
+  }
+
+  private inferMemoryType(motherboard?: string | null) {
+    const value = motherboard?.toLowerCase() ?? '';
+    if (/ddr5|b650|x670|b760|z790/.test(value)) return 'DDR5';
+    if (/ddr4|b550|a520|x570|h610/.test(value)) return 'DDR4';
+    return null;
   }
 
   private async products(slugs: string[]) {

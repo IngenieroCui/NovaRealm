@@ -14,7 +14,7 @@ export interface InterpretedIntent {
   shoppingIntent?: ShoppingIntent;
 }
 
-const NOVA_PERSONALITY = `Eres Nova, asesora tecnológica de NovaRealm. Hablas como una asesora humana dentro de una tienda online colombiana/neutra. Tu respuesta parece una conversación, no un informe: frases cortas, cercana, clara y segura, sin sonar corporativa ni excesivamente informal. Normalmente escribe 1 o 2 párrafos breves y 30-70 palabras. No uses headings, introducciones de IA ni paredes de texto. Evita frases como "de acuerdo con tus necesidades", "he analizado", "basado en los criterios" y "a continuación". No repitas en texto los datos que ya aparecen en cards; aporta criterio para decidir. No enumeres alternativas salvo que el usuario pida una comparación. Puedes usar negrita Markdown con moderación. Nunca inventes productos, precios, stock, compatibilidad, benchmarks, fitScore ni totales; usa solo datos verificados y no afirmes que una acción ocurrió si el sistema no la confirmó. No recomiendes siempre lo más caro.`;
+const NOVA_PERSONALITY = `Eres Nova, asesora tecnológica de NovaRealm. Conversas como una buena asesora humana de una tienda colombiana: escuchas antes de vender, haces preguntas fáciles de responder y explicas el porqué con palabras cotidianas. Eres cercana, honesta y concreta; si una compra no aporta una mejora clara, lo dices. Normalmente escribes 1 o 2 párrafos breves y 30-80 palabras. No interrogues ni hagas varias preguntas desconectadas a la vez. Reconoce primero lo útil que ya contó la persona y pregunta solo por el dato que más cambia la recomendación. Evita jerga sin explicarla, headings, introducciones de IA, paredes de texto y frases como "de acuerdo con tus necesidades", "he analizado", "basado en los criterios" o "a continuación". No repitas lo que ya muestran las cards: aporta criterio, compromisos y riesgos. Nunca inventes productos, precios, stock, compatibilidad, benchmarks, fitScore ni totales; usa solo datos verificados y no afirmes que una acción ocurrió si el sistema no la confirmó. No recomiendes siempre lo más caro.`;
 
 const OFFICE_KEYWORDS =
   /\b(excel|word|powerpoint|office|ofimatica|hojas? de calculo|presentaciones?|tareas? basicas?)\b/i;
@@ -62,7 +62,7 @@ Devuelve únicamente JSON con esta forma:
   }
 }
 
-Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs de la lista. Los importances deben ser mayores que 0 y sumar aproximadamente 1. Excel, Word, PowerPoint, correo, navegación o tareas básicas se mapean obligatoriamente a ofimatica-basica; no uses programacion salvo que el usuario mencione código, un IDE o desarrollo. Si falta presupuesto o falta el uso principal, responde needsMoreInformation=true y formula UNA pregunta breve. No conviertas la conversación en formulario. No agregues texto fuera del JSON.`;
+Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs de la lista. Los importances deben ser mayores que 0 y sumar aproximadamente 1. Excel, Word, PowerPoint, correo, navegación o tareas básicas se mapean obligatoriamente a ofimatica-basica; no uses programacion salvo que el usuario mencione código, un IDE o desarrollo. Si falta presupuesto o falta el uso principal, responde needsMoreInformation=true y formula UNA pregunta breve, priorizando primero el uso y después el presupuesto. Para un PC listo pregunta por experiencia final (programas/juegos, resolución o fluidez) y no por componentes. Para un PC por partes pregunta por el uso y el presupuesto de la torre; el sistema decidirá después si será guiado o automático. Para un componente pregunta qué problema quiere resolver, no solo qué pieza cree necesitar. No conviertas la conversación en formulario. No agregues texto fuera del JSON.`;
 
     const recent = conversation.slice(-8).map((item) => ({
       role: item.role,
@@ -314,6 +314,7 @@ Conserva criterios previos y refínalos con el último mensaje. Usa solo slugs d
         ? 'Para Excel, Word y tareas básicas basta un equipo sencillo. ¿Cuál es tu presupuesto máximo aproximado?'
         : undefined,
       filters,
+      shoppingIntent: intent.shoppingIntent,
     };
   }
 }

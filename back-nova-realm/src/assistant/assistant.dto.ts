@@ -6,6 +6,9 @@ import {
   IsIn,
   IsOptional,
   IsString,
+  IsInt,
+  Min,
+  Max,
   MaxLength,
   ValidateNested,
 } from 'class-validator';
@@ -28,6 +31,15 @@ export class ConversationMessageDto {
   content!: string;
 }
 
+export class CurrentPcDto {
+  @IsOptional() @IsString() @MaxLength(160) cpu?: string | null;
+  @IsOptional() @IsString() @MaxLength(160) gpu?: string | null;
+  @IsOptional() @IsInt() @Min(0) @Max(1024) ramGb?: number | null;
+  @IsOptional() @IsString() @MaxLength(200) motherboard?: string | null;
+  @IsOptional() @IsString() @MaxLength(300) storage?: string | null;
+  @IsOptional() @IsInt() @Min(0) @Max(5000) psuW?: number | null;
+}
+
 export class AssistantContextDto {
   @IsOptional() @IsString() @MaxLength(80) page?: string;
   @IsOptional() @IsString() @MaxLength(120) productSlug?: string;
@@ -35,6 +47,8 @@ export class AssistantContextDto {
   @IsOptional() @IsIn(Object.values(ShoppingIntent)) shoppingIntent?: ShoppingIntent;
   @IsOptional() @IsString() @MaxLength(120) selectedComponentType?: string;
   @IsOptional() @IsIn(['GUIDED', 'AUTO']) builderMode?: 'GUIDED' | 'AUTO';
+  @IsOptional() @ValidateNested() @Type(() => CurrentPcDto) currentPc?: CurrentPcDto;
+  @IsOptional() @IsString() @MaxLength(160) upgradeGoal?: string;
 }
 
 export class ChatRequestDto {

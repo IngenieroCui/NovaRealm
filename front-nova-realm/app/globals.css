@@ -3187,3 +3187,17 @@ main {
 button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid rgba(59, 111, 221, .4); outline-offset: 3px; }
 @media (max-width: 760px) { .builder-progress > div:first-child, .builder-progress.is-done { align-items: flex-start; flex-direction: column; gap: 3px; }.component-result > div:last-child > strong { text-align: left; }.component-result > div:last-child { justify-content: flex-start; } }
+
+.system-info-guide { display: grid; gap: 10px; margin-top: 12px; padding: 14px; border: 1px solid #cad8f2; border-radius: 15px; background: #f7f9fe; color: #263e70; }
+.system-info-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.system-info-heading > div { display: grid; gap: 3px; }
+.system-info-heading span { color: #6b80aa; font-size: 9px; font-weight: 850; letter-spacing: .09em; }
+.system-info-heading strong { font-size: 13px; }
+.system-info-heading button { min-height: 32px; padding: 0 11px; border: 1px solid #27437c; border-radius: 9px; background: #27437c; color: #fff; cursor: pointer; font-size: 10px; font-weight: 750; white-space: nowrap; }
+.system-info-guide pre { max-width: 100%; margin: 0; padding: 11px; overflow-x: auto; border: 1px solid #dbe4f5; border-radius: 10px; background: #18284b; color: #eaf0ff; font: 10px/1.55 Consolas, "Courier New", monospace; white-space: pre-wrap; word-break: break-word; }
+.system-info-guide ol { display: grid; gap: 6px; margin: 0; padding-left: 20px; color: #53698f; font-size: 11px; line-height: 1.45; }
+.system-info-guide > p { margin: 0; padding-top: 9px; border-top: 1px solid #dbe4f5; color: #6b7fa4; font-size: 10px; line-height: 1.45; }
+.upgrade-panel .upgrade-bottleneck { margin: 0; padding: 10px; border: 0; border-radius: 9px; background: #edf3ff; color: #344f82; }
+.upgrade-panel .upgrade-check { margin: 0; padding: 9px 0 0; border-top: 1px solid #e1e8f5; color: #60759c; }
+
+@media (max-width: 520px) { .system-info-heading { align-items: flex-start; flex-direction: column; }.system-info-heading button { width: 100%; } }

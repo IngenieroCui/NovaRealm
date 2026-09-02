@@ -112,7 +112,9 @@ export interface ChatResponse {
   shoppingIntent?: ShoppingIntent;
   componentRecommendations?: Product[];
   componentType?: string;
-  currentPc?: { cpu: string | null; gpu: string | null; ramGb: number | null };
+  currentPc?: CurrentPc;
+  upgradeGoal?: string | null;
+  systemInfoGuide?: SystemInfoGuide;
   upgradeRecommendations?: Product[];
   peripheralRecommendations?: Product[];
   build?: BuildSummary;
@@ -121,6 +123,22 @@ export interface ChatResponse {
   warnings?: string[];
   upgradeAnalysis?: UpgradeAnalysis;
   flow?: BuilderFlow;
+}
+
+export interface CurrentPc {
+  cpu: string | null;
+  gpu: string | null;
+  ramGb: number | null;
+  motherboard?: string | null;
+  storage?: string | null;
+  psuW?: number | null;
+}
+
+export interface SystemInfoGuide {
+  title: string;
+  command: string;
+  steps: string[];
+  note: string;
 }
 
 export interface BuildSummary {
@@ -152,10 +170,13 @@ export interface AssistantAction {
 }
 
 export interface UpgradeAnalysis {
-  currentPc: { cpu: string | null; gpu: string | null; ramGb: number | null };
+  currentPc: CurrentPc;
   goal: string;
   detectedScores: { cpu: number | null; gpu: number | null; ramGb: number | null };
   priority: ProductType;
+  bottleneck: string;
+  assessment: string;
+  compatibilityChecks: Array<{ status: string; label: string; detail: string }>;
   bestFirstUpgrade: Product | null;
   bestValue: Product | null;
   premium: Product | null;

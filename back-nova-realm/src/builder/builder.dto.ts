@@ -36,6 +36,9 @@ export class UpgradePcDto {
   @IsOptional() @IsString() cpu?: string | null;
   @IsOptional() @IsString() gpu?: string | null;
   @IsOptional() @IsInt() @Min(0) ramGb?: number | null;
+  @IsOptional() @IsString() motherboard?: string | null;
+  @IsOptional() @IsString() storage?: string | null;
+  @IsOptional() @IsInt() @Min(0) psuW?: number | null;
   @IsString() @MaxLength(120) goal!: string;
   @IsOptional() @IsInt() @Min(500000) budgetMax?: number;
 }
