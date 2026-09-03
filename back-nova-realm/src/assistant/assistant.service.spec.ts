@@ -1,8 +1,10 @@
 import { AssistantService } from './assistant.service';
-import { ShoppingIntent } from './assistant.dto';
+import { ChatRequestDto, ShoppingIntent } from './assistant.dto';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 
 describe('AssistantService conversational orchestration', () => {
-  const ai = { chatTurn: jest.fn(), explainRecommendations: jest.fn(), explainComparison: jest.fn(), answerWithVerifiedContext: jest.fn(), answerBuilderQuestion: jest.fn() };
+  const ai = { chatTurn: jest.fn(), explainRecommendations: jest.fn(), explainComparison: jest.fn(), answerWithVerifiedContext: jest.fn(), answerBuilderQuestion: jest.fn(), composeConversationReply: jest.fn() };
   const workloads = { findAll: jest.fn().mockResolvedValue([{ slug: 'valorant' }, { slug: 'blender' }, { slug: 'programacion' }]) };
   const recommendations = { recommend: jest.fn() };
   const builder = { recommendComponents: jest.fn(), autoBuild: jest.fn(), applyAction: jest.fn(), summarize: jest.fn(), flow: jest.fn(), analyzeUpgrade: jest.fn() };
@@ -17,6 +19,7 @@ describe('AssistantService conversational orchestration', () => {
     ai.chatTurn.mockResolvedValue(turn());
     ai.answerWithVerifiedContext.mockResolvedValue('Explicación contextual de Nova');
     ai.answerBuilderQuestion.mockResolvedValue('Respuesta sobre la pieza sin avanzar.');
+    ai.composeConversationReply.mockResolvedValue('Pregunta contextual de Nova.');
     ai.explainRecommendations.mockResolvedValue('Nova explica la recomendación.');
     recommendations.recommend.mockResolvedValue({ recommendations: [], scoring: {} });
     builder.summarize.mockResolvedValue(emptyBuild);
@@ -71,7 +74,7 @@ describe('AssistantService conversational orchestration', () => {
     builder.applyAction.mockResolvedValue({ action: 'ADD_TO_BUILD', product: cpu, summary: { ...emptyBuild, products: [cpu], components: [cpu] }, flow: { mode: 'GUIDED', currentStep: 'MOTHERBOARD' }, recommendations: [board] });
     const response = await service.action({ builderAction: { action: 'ADD_TO_BUILD', currentSlugs: [], productSlug: 'ryzen-7600' }, criteria });
     expect(builder.applyAction).toHaveBeenCalled();
-    expect(ai.answerWithVerifiedContext).toHaveBeenCalledWith('builder-action', expect.any(String), 'ADD_TO_BUILD', expect.objectContaining({ selectedProduct: cpu }));
+    expect(ai.composeConversationReply).toHaveBeenCalledWith(expect.objectContaining({ userMessage: 'ADD_TO_BUILD', verified: expect.objectContaining({ selectedProduct: cpu }) }));
     expect(response.componentRecommendations).toEqual([board]);
   });
 
@@ -101,5 +104,11 @@ describe('AssistantService conversational orchestration', () => {
     expect(builder.analyzeUpgrade).toHaveBeenCalledTimes(1);
     expect(response.awaiting).toBeNull();
     expect(response.upgradeAnalysis.priority).toBe('GPU');
+  });
+
+  it('preserves structured workloads through the real DTO transformation', async () => {
+    const dto = plainToInstance(ChatRequestDto, { message: 'Guiarme paso a paso', criteria: { budgetMax: 7000000, workloads: [{ slug: 'blender', importance: 1 }] } }, { enableImplicitConversion: true });
+    expect(await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).toHaveLength(0);
+    expect(dto.criteria?.workloads).toEqual([{ slug: 'blender', importance: 1 }]);
   });
 });

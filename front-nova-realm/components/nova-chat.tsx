@@ -38,6 +38,7 @@ export function NovaChat({ compact = false, context }: { compact?: boolean; cont
   const send = useCallback(async (text: string, showUser = true, quickReply?: QuickReply) => {
     const clean = text.trim();
     if (!clean || requestBusy.current) return;
+    initialSent.current = true;
     requestBusy.current = true;
     const history = messages.filter((message) => !message.error).slice(-8).map(({ role, content }) => ({ role, content }));
     if (showUser) setMessages((current) => [...current.map((message) => message.actions?.length || message.quickReplies?.length || message.componentRecommendations?.length ? { ...message, actionableConsumed: true } : message), { id: nextId.current++, role: "user", content: clean }]);

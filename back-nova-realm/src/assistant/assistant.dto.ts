@@ -9,6 +9,7 @@ import {
   IsOptional,
   IsString,
   IsInt,
+  IsNumber,
   Min,
   Max,
   MaxLength,
@@ -41,13 +42,22 @@ export enum ConversationStage {
 export type AwaitingField = 'INTENT' | 'USE' | 'BUDGET' | 'BUILDER_MODE' | 'COMPONENT_SELECTION' | null;
 export type QuickReplyKind = 'SET_INTENT' | 'SET_BUDGET' | 'SET_WORKLOAD' | 'SET_BUILDER_MODE' | 'BUILDER_ACTION' | 'SEND_MESSAGE';
 
+export class ConversationWorkloadDto {
+  @IsString() @MaxLength(120) slug!: string;
+  @IsNumber() @Min(0.01) @Max(1) importance!: number;
+}
+
+export class ConversationPreferencesDto {
+  @IsOptional() @IsBoolean() futureUpgrade?: boolean;
+}
+
 export class ConversationCriteriaDto {
   @IsOptional() @IsInt() @Min(500000) budgetMax?: number;
   @IsOptional() @IsInt() @Min(500000) budgetPreferred?: number;
   @IsOptional() @IsIn(['1080p', '1440p', '4k']) resolution?: '1080p' | '1440p' | '4k';
   @IsOptional() @IsInt() @Min(30) @Max(360) targetFps?: number;
-  @IsOptional() @IsArray() @ArrayMaxSize(8) workloads?: Array<{ slug: string; importance: number }>;
-  @IsOptional() preferences?: { futureUpgrade?: boolean };
+  @IsOptional() @IsArray() @ArrayMaxSize(8) @ValidateNested({ each: true }) @Type(() => ConversationWorkloadDto) workloads?: ConversationWorkloadDto[];
+  @IsOptional() @ValidateNested() @Type(() => ConversationPreferencesDto) preferences?: ConversationPreferencesDto;
   @IsOptional() @IsIn(['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'STORAGE', 'PSU', 'COOLING', 'CASE', 'MONITOR']) requestedComponent?: string;
 }
 

@@ -5,7 +5,7 @@ import { Workload } from '../workloads/workload.types';
 import { AiMessage, AiProvider } from './ai.provider';
 import { CloudflareAiProvider } from './cloudflare-ai.provider';
 import { OllamaAiProvider } from './ollama-ai.provider';
-import { ConversationCriteriaDto, ShoppingIntent } from '../assistant/assistant.dto';
+import { AwaitingField, ConversationCriteriaDto, ConversationStage, ShoppingIntent } from '../assistant/assistant.dto';
 import type { ComponentCandidate } from '../builder/builder.service';
 import type { Product, ProductType } from '../catalog/product.types';
 
@@ -219,6 +219,35 @@ Devuelve únicamente JSON con esta forma:
       { role: 'system', content: `${NOVA_PERSONALITY}\n${instruction} Usa únicamente los datos verificados; si falta algo, dilo sin inventar.` },
       { role: 'user', content: `Mensaje del usuario: ${userMessage}\nDatos verificados: ${JSON.stringify(verified)}` },
     ]);
+  }
+
+  async composeConversationReply(input: {
+    userMessage: string;
+    shoppingIntent: ShoppingIntent;
+    criteria: ConversationCriteriaDto;
+    stage: ConversationStage;
+    awaiting: AwaitingField;
+    verified?: unknown;
+  }) {
+    const expected = input.awaiting ?? 'NONE';
+    const system = `${NOVA_PERSONALITY}
+Redacta el siguiente mensaje real de Nova usando el estado decidido por el backend. Devuelve SOLO JSON:
+{"nextQuestionPurpose":"${expected}","reply":"mensaje"}
+nextQuestionPurpose debe ser exactamente "${expected}". reply debe tener 30-80 palabras, sin listas. No preguntes por datos que ya aparecen en criteria. Si awaiting es NONE, responde o recomienda sin convertir el turno en otra pregunta de descubrimiento. Si hay candidatos, toma postura por la opción marcada RECOMMENDED, nómbrala y explica el criterio; menciona como máximo una alternativa. Los botones y cards se renderizan aparte. Todo precio numérico verificado está en COP: escríbelo como "$... COP" y nunca uses ₡, dólares u otra moneda.`;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const raw = await this.call('conversation-reply', [
+        { role: 'system', content: system },
+        { role: 'user', content: `Mensaje: ${input.userMessage}\nEstado verificado: ${JSON.stringify({ shoppingIntent: input.shoppingIntent, criteria: input.criteria, stage: input.stage, awaiting: expected, verified: input.verified })}` },
+      ], true);
+      const parsed = this.parseJson(raw) as Record<string, unknown>;
+      const purpose = parsed.nextQuestionPurpose === null ? 'NONE' : String(parsed.nextQuestionPurpose);
+      const reply = typeof parsed.reply === 'string' ? parsed.reply.trim() : '';
+      const wordCount = reply.split(/\s+/).filter(Boolean).length;
+      const conversational = wordCount >= 12 && wordCount <= 120 && !/(?:^|\n)\s*[-*•]\s/.test(reply) && !reply.includes('₡');
+      if (purpose === expected && reply && conversational) return reply.slice(0, 1000);
+      console.warn(`[NovaAI] operation=conversation-reply valid=false expectedPurpose=${expected} attempt=${attempt + 1}`);
+    }
+    throw new ServiceUnavailableException('Nova no pudo formular una respuesta coherente con el estado actual.');
   }
 
   private async call(operation: string, messages: AiMessage[], json = false) {

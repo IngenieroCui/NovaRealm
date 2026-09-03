@@ -52,7 +52,7 @@ export class AssistantService {
     const recommended = candidates.find((item) => item.recommendedRole === 'RECOMMENDED') ?? candidates[0];
     let message: string;
     try {
-      message = await this.ai.answerWithVerifiedContext('builder-action', 'Explica en 30-80 palabras el resultado confirmado. Si se eligió una pieza, explica por qué encaja y presenta el siguiente paso. No afirmes una acción que el resultado no confirme.', input.builderAction.label ?? input.builderAction.action, { action: result.action, selectedProduct: result.product, build: result.summary, flow: result.flow, nextCandidates: candidates.slice(0, 5), criteria });
+      message = await this.ai.composeConversationReply({ userMessage: input.builderAction.label ?? input.builderAction.action, shoppingIntent: ShoppingIntent.CUSTOM_PC, criteria, stage: result.flow?.currentStep === 'DONE' ? ConversationStage.COMPLETE : ConversationStage.BUILDER, awaiting: null, verified: { action: result.action, selectedProduct: result.product, build: result.summary, flow: result.flow, nextCandidates: candidates.slice(0, 5) } });
     } catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build: result.summary, flow: result.flow, componentRecommendations: candidates }); }
     return this.response({ message, ...this.base(ShoppingIntent.CUSTOM_PC, criteria), build: result.summary, flow: result.flow, componentRecommendations: candidates, lastRecommendedProductSlug: recommended?.slug, lastComparedProductSlugs: [], lastBuilderAdviceTopic: result.flow?.currentStep, builderPreference: input.context?.builderPreference, quickReplies: this.builderConversationReplies(result.flow?.currentStep) }, result.flow?.currentStep === 'DONE' ? ConversationStage.COMPLETE : ConversationStage.BUILDER, null, true, 'builder-action');
   }
@@ -77,13 +77,13 @@ export class AssistantService {
       const build = await this.builder.autoBuild({ budgetMax: criteria.budgetMax!, workloadSlugs: workloads.map((item) => item.slug), assembly: input.context?.assemblySelected });
       const flow = await this.builder.flow(build.products.map((item) => item.slug), 'AUTO');
       let message: string;
-      try { message = await this.ai.answerWithVerifiedContext('builder-answer', 'Presenta la configuración calculada, señala el compromiso principal y ofrece responder dudas. No enumeres todas las cards.', input.message, { criteria, build, flow }); }
+      try { message = await this.ai.composeConversationReply({ userMessage: input.message, shoppingIntent: ShoppingIntent.CUSTOM_PC, criteria, stage: ConversationStage.COMPLETE, awaiting: null, verified: { build, flow } }); }
       catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build, flow }); }
       return this.response({ message, ...base, build, flow, quickReplies: [] }, ConversationStage.COMPLETE, null, true, 'builder-answer');
     }
     const result = await this.builder.applyAction({ action: 'START_GUIDED', currentSlugs: input.context?.buildSlugs ?? [], budgetMax: criteria.budgetMax, workloads, mode: 'GUIDED', assemblySelected: input.context?.assemblySelected });
     let message: string;
-    try { message = await this.ai.answerWithVerifiedContext('builder-answer', 'Da inicio al armado guiado, explica brevemente qué se decide primero y que las opciones mostradas ya respetan el contexto disponible.', input.message, { criteria, build: result.summary, flow: result.flow, candidates: result.recommendations }); }
+    try { message = await this.ai.composeConversationReply({ userMessage: input.message, shoppingIntent: ShoppingIntent.CUSTOM_PC, criteria, stage: ConversationStage.BUILDER, awaiting: null, verified: { build: result.summary, flow: result.flow, candidates: result.recommendations } }); }
     catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build: result.summary, flow: result.flow }); }
     const candidates = result.recommendations as ComponentCandidate[];
     return this.response({ message, ...base, build: result.summary, flow: result.flow, componentRecommendations: candidates, lastRecommendedProductSlug: candidates.find((item) => item.recommendedRole === 'RECOMMENDED')?.slug ?? candidates[0]?.slug, quickReplies: this.builderConversationReplies(result.flow.currentStep) }, ConversationStage.BUILDER, null, true, 'builder-answer');
@@ -95,7 +95,7 @@ export class AssistantService {
     if (awaiting) return this.discoveryResponse(input, criteria, turn, base, awaiting, awaiting === 'USE' ? ConversationStage.DISCOVER_USE : ConversationStage.DISCOVER_BUDGET);
     const result = await this.builder.recommendComponents({ componentType: criteria.requestedComponent as ProductType, itemSlugs: input.context?.buildSlugs ?? [], budgetMax: criteria.budgetMax, workloads: criteria.workloads, assemblySelected: input.context?.assemblySelected });
     let message: string;
-    try { message = await this.ai.answerWithVerifiedContext('component-answer', 'Elige una opción principal entre las candidatas verificadas, explica una razón y menciona cualquier verificación pendiente.', input.message, { criteria, candidates: result.recommendations, warnings: result.warnings }); }
+    try { message = await this.ai.composeConversationReply({ userMessage: input.message, shoppingIntent: ShoppingIntent.COMPONENT, criteria, stage: ConversationStage.COMPONENT, awaiting: null, verified: { candidates: result.recommendations, warnings: result.warnings } }); }
     catch { return this.aiUnavailable(criteria, ShoppingIntent.COMPONENT, { componentRecommendations: result.recommendations }); }
     return this.response({ message, ...base, componentType: criteria.requestedComponent, componentRecommendations: result.recommendations, warnings: result.warnings, lastRecommendedProductSlug: result.recommendations.find((item) => item.recommendedRole === 'RECOMMENDED')?.slug ?? result.recommendations[0]?.slug, quickReplies: [] }, ConversationStage.COMPONENT, null, true, 'component-answer');
   }
@@ -112,7 +112,7 @@ export class AssistantService {
     if (!criteria.budgetMax) return this.discoveryResponse(input, criteria, turn, { ...base, currentPc, upgradeGoal }, 'BUDGET', ConversationStage.UPGRADE);
     const upgrade = await this.builder.analyzeUpgrade({ ...currentPc, goal: upgradeGoal, budgetMax: criteria.budgetMax });
     let message: string;
-    try { message = await this.ai.answerWithVerifiedContext('upgrade-answer', 'Explica el diagnóstico calculado, toma postura sobre el primer cambio y destaca las comprobaciones pendientes. No recalcules compatibilidad.', input.message, { criteria, upgrade }); }
+    try { message = await this.ai.composeConversationReply({ userMessage: input.message, shoppingIntent: ShoppingIntent.UPGRADE_PC, criteria, stage: ConversationStage.UPGRADE, awaiting: null, verified: { upgrade } }); }
     catch { return this.aiUnavailable(criteria, ShoppingIntent.UPGRADE_PC, { currentPc, upgradeGoal, upgradeAnalysis: upgrade }); }
     return this.response({ message, ...base, currentPc, upgradeGoal, upgradeAnalysis: upgrade, upgradeRecommendations: upgrade.recommendations, quickReplies: [] }, ConversationStage.UPGRADE, null, true, 'upgrade-answer');
   }
@@ -138,12 +138,12 @@ export class AssistantService {
   }
 
   private async discoveryResponse(input: ChatRequestDto, criteria: ConversationCriteriaDto, turn: ChatTurnResult | null, base: Record<string, unknown>, awaiting: Exclude<AwaitingField, null>, stage: ConversationStage) {
-    let message = turn?.reply;
+    let message = turn?.nextQuestionPurpose === awaiting ? turn.reply : undefined;
     if (!message) {
-      try { message = await this.ai.answerWithVerifiedContext('structured-action', `Formula una sola pregunta contextual para obtener ${awaiting}. Reconoce primero lo que ya se conoce.`, input.message, { shoppingIntent: base.shoppingIntent, criteria, awaiting }); }
+      try { message = await this.ai.composeConversationReply({ userMessage: input.message, shoppingIntent: base.shoppingIntent as ShoppingIntent, criteria, stage, awaiting, verified: { reason: `El backend necesita únicamente ${awaiting}` } }); }
       catch { return this.aiUnavailable(criteria, base.shoppingIntent as ShoppingIntent); }
     }
-    return this.response({ message, ...base, criteria, filters: criteria, quickReplies: quickRepliesFor(awaiting, base.shoppingIntent as ShoppingIntent) }, stage, awaiting, true, input.quickReply ? 'structured-action' : 'interpret+reply');
+    return this.response({ message, ...base, criteria, filters: criteria, quickReplies: quickRepliesFor(awaiting, base.shoppingIntent as ShoppingIntent) }, stage, awaiting, true, turn?.nextQuestionPurpose === awaiting ? 'interpret+reply' : 'conversation-reply');
   }
 
   private async ensureQuestion(turn: ChatTurnResult | null, instruction: string, userMessage: string, verified: unknown) {
