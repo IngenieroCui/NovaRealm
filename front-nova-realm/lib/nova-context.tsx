@@ -21,6 +21,10 @@ export interface NovaSession {
   assemblySelected: boolean;
   currentPc?: CurrentPc;
   upgradeGoal?: string;
+  lastRecommendedProductSlug?: string;
+  lastComparedProductSlugs?: string[];
+  lastBuilderAdviceTopic?: string;
+  builderPreference?: "balanced" | "cheaper" | "powerful";
 }
 
 interface NovaContextValue {
@@ -38,9 +42,9 @@ const NovaContext = createContext<NovaContextValue | null>(null);
 export function NovaProvider({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const [session, setSession] = useState<NovaSession>({ filters: null, currentBuild: [], selectedProduct: null, conversation: [], assemblySelected: false });
-  const openNova = useCallback((intent?: ShoppingIntent) => { if (intent) setSession((current) => current.shoppingIntent === intent ? current : { ...current, shoppingIntent: intent, selectedComponentType: undefined, builderMode: undefined, builderFlow: undefined, currentPc: undefined, upgradeGoal: undefined }); setOpen(true); }, []);
+  const openNova = useCallback((intent?: ShoppingIntent) => { if (intent) setSession((current) => current.shoppingIntent === intent ? current : { ...current, shoppingIntent: intent, selectedComponentType: undefined, builderMode: undefined, builderFlow: undefined, currentPc: undefined, upgradeGoal: undefined, lastRecommendedProductSlug: undefined, lastComparedProductSlugs: undefined, lastBuilderAdviceTopic: undefined, builderPreference: undefined }); setOpen(true); }, []);
   const closeNova = useCallback(() => setOpen(false), []);
-  const setIntent = useCallback((intent: ShoppingIntent) => setSession((current) => current.shoppingIntent === intent ? current : { ...current, shoppingIntent: intent, selectedComponentType: undefined, builderMode: undefined, builderFlow: undefined, currentPc: undefined, upgradeGoal: undefined }), []);
+  const setIntent = useCallback((intent: ShoppingIntent) => setSession((current) => current.shoppingIntent === intent ? current : { ...current, shoppingIntent: intent, selectedComponentType: undefined, builderMode: undefined, builderFlow: undefined, currentPc: undefined, upgradeGoal: undefined, lastRecommendedProductSlug: undefined, lastComparedProductSlugs: undefined, lastBuilderAdviceTopic: undefined, builderPreference: undefined }), []);
   const setProductContext = useCallback((product: NovaProductContext | null) => setSession((current) => ({ ...current, selectedProduct: product })), []);
   const patchSession = useCallback((value: Partial<NovaSession>) => setSession((current) => ({ ...current, ...value })), []);
   const value = useMemo<NovaContextValue>(() => ({

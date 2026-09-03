@@ -15,6 +15,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { RecommendationRequestDto } from '../recommendations/recommendation.dto';
+import { BuilderActionDto } from '../builder/builder.dto';
 
 export enum ShoppingIntent {
   PREBUILT_PC = 'PREBUILT_PC',
@@ -22,6 +23,40 @@ export enum ShoppingIntent {
   UPGRADE_PC = 'UPGRADE_PC',
   COMPONENT = 'COMPONENT',
   PC_WITH_PERIPHERALS = 'PC_WITH_PERIPHERALS',
+}
+
+export enum ConversationStage {
+  DISCOVER_INTENT = 'DISCOVER_INTENT',
+  DISCOVER_USE = 'DISCOVER_USE',
+  DISCOVER_BUDGET = 'DISCOVER_BUDGET',
+  DISCOVER_DETAILS = 'DISCOVER_DETAILS',
+  RECOMMENDING = 'RECOMMENDING',
+  BUILDER_MODE = 'BUILDER_MODE',
+  BUILDER = 'BUILDER',
+  UPGRADE = 'UPGRADE',
+  COMPONENT = 'COMPONENT',
+  COMPLETE = 'COMPLETE',
+}
+
+export type AwaitingField = 'INTENT' | 'USE' | 'BUDGET' | 'BUILDER_MODE' | 'COMPONENT_SELECTION' | null;
+export type QuickReplyKind = 'SET_INTENT' | 'SET_BUDGET' | 'SET_WORKLOAD' | 'SET_BUILDER_MODE' | 'BUILDER_ACTION' | 'SEND_MESSAGE';
+
+export class ConversationCriteriaDto {
+  @IsOptional() @IsInt() @Min(500000) budgetMax?: number;
+  @IsOptional() @IsInt() @Min(500000) budgetPreferred?: number;
+  @IsOptional() @IsIn(['1080p', '1440p', '4k']) resolution?: '1080p' | '1440p' | '4k';
+  @IsOptional() @IsInt() @Min(30) @Max(360) targetFps?: number;
+  @IsOptional() @IsArray() @ArrayMaxSize(8) workloads?: Array<{ slug: string; importance: number }>;
+  @IsOptional() preferences?: { futureUpgrade?: boolean };
+  @IsOptional() @IsIn(['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'STORAGE', 'PSU', 'COOLING', 'CASE', 'MONITOR']) requestedComponent?: string;
+}
+
+export class QuickReplyDto {
+  @IsString() @MaxLength(80) id!: string;
+  @IsString() @MaxLength(100) label!: string;
+  @IsIn(['SET_INTENT', 'SET_BUDGET', 'SET_WORKLOAD', 'SET_BUILDER_MODE', 'BUILDER_ACTION', 'SEND_MESSAGE']) kind!: QuickReplyKind;
+  @IsOptional() value?: string | number;
+  @IsOptional() payload?: Record<string, unknown>;
 }
 
 export class ConversationMessageDto {
@@ -53,6 +88,10 @@ export class AssistantContextDto {
   @IsOptional() @IsBoolean() assemblySelected?: boolean;
   @IsOptional() @ValidateNested() @Type(() => CurrentPcDto) currentPc?: CurrentPcDto;
   @IsOptional() @IsString() @MaxLength(160) upgradeGoal?: string;
+  @IsOptional() @IsString() @MaxLength(120) lastRecommendedProductSlug?: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(3) @IsString({ each: true }) lastComparedProductSlugs?: string[];
+  @IsOptional() @IsString() @MaxLength(160) lastBuilderAdviceTopic?: string;
+  @IsOptional() @IsIn(['balanced', 'cheaper', 'powerful']) builderPreference?: 'balanced' | 'cheaper' | 'powerful';
 }
 
 export class ChatRequestDto {
@@ -69,8 +108,18 @@ export class ChatRequestDto {
 
   @IsOptional()
   @ValidateNested()
-  @Type(() => RecommendationRequestDto)
-  filters?: RecommendationRequestDto;
+  @Type(() => ConversationCriteriaDto)
+  filters?: ConversationCriteriaDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ConversationCriteriaDto)
+  criteria?: ConversationCriteriaDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => QuickReplyDto)
+  quickReply?: QuickReplyDto;
 
   @IsOptional()
   @IsIn(Object.values(ShoppingIntent))
@@ -80,6 +129,13 @@ export class ChatRequestDto {
   @ValidateNested()
   @Type(() => AssistantContextDto)
   context?: AssistantContextDto;
+}
+
+export class AssistantActionRequestDto {
+  @ValidateNested() @Type(() => BuilderActionDto) builderAction!: BuilderActionDto;
+  @IsOptional() @ValidateNested() @Type(() => ConversationCriteriaDto) criteria?: ConversationCriteriaDto;
+  @IsOptional() @ValidateNested() @Type(() => AssistantContextDto) context?: AssistantContextDto;
+  @IsOptional() @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => ConversationMessageDto) conversation?: ConversationMessageDto[];
 }
 
 export class CompareRequestDto {

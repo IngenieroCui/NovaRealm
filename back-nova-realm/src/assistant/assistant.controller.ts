@@ -1,6 +1,6 @@
 import { Body, Controller, Post } from '@nestjs/common';
 import { AssistantService } from './assistant.service';
-import { ChatRequestDto, CompareRequestDto } from './assistant.dto';
+import { AssistantActionRequestDto, ChatRequestDto, CompareRequestDto } from './assistant.dto';
 
 @Controller('assistant')
 export class AssistantController {
@@ -9,6 +9,11 @@ export class AssistantController {
   @Post('chat')
   chat(@Body() input: ChatRequestDto) {
     return this.assistant.chat(input);
+  }
+
+  @Post('action')
+  action(@Body() input: AssistantActionRequestDto) {
+    return this.assistant.action(input);
   }
 
   @Post('compare')

@@ -15,6 +15,10 @@ export type ProductType =
 export type PeripheralType = "MONITOR" | "KEYBOARD" | "MOUSE" | "HEADSET";
 export type ShoppingIntent = "PREBUILT_PC" | "CUSTOM_PC" | "UPGRADE_PC" | "COMPONENT" | "PC_WITH_PERIPHERALS";
 export type BuilderMode = "GUIDED" | "AUTO";
+export type ConversationStage = "DISCOVER_INTENT" | "DISCOVER_USE" | "DISCOVER_BUDGET" | "DISCOVER_DETAILS" | "RECOMMENDING" | "BUILDER_MODE" | "BUILDER" | "UPGRADE" | "COMPONENT" | "COMPLETE";
+export type AwaitingField = "INTENT" | "USE" | "BUDGET" | "BUILDER_MODE" | "COMPONENT_SELECTION" | null;
+export type QuickReplyKind = "SET_INTENT" | "SET_BUDGET" | "SET_WORKLOAD" | "SET_BUILDER_MODE" | "BUILDER_ACTION" | "SEND_MESSAGE";
+export interface QuickReply { id: string; label: string; kind: QuickReplyKind; value?: string | number; payload?: Record<string, unknown>; }
 export interface BuilderFlow {
   mode: BuilderMode;
   currentStep: ProductType | "PERIPHERALS" | "ASSEMBLY" | "DONE";
@@ -44,7 +48,7 @@ export interface Product {
   productivityScore: number | null;
   upgradeabilityScore: number | null;
   features: string[];
-  technicalSpecs: Record<string, string | number | boolean>;
+  technicalSpecs: Record<string, string | number | boolean | string[]>;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,9 +79,11 @@ export interface RecommendationFilters {
   budgetPreferred?: number;
   resolution?: "1080p" | "1440p" | "4k";
   targetFps?: number;
-  workloads: Array<{ slug: string; importance: number }>;
+  workloads?: Array<{ slug: string; importance: number }>;
   preferences?: { futureUpgrade?: boolean };
+  requestedComponent?: ProductType;
 }
+export type ConversationCriteria = RecommendationFilters;
 
 export interface WorkloadScore {
   slug: string;
@@ -119,10 +125,28 @@ export interface ChatResponse {
   peripheralRecommendations?: Product[];
   build?: BuildSummary;
   actions?: AssistantAction[];
-  quickActions?: string[];
+  criteria?: ConversationCriteria;
+  quickReplies?: QuickReply[];
+  stage?: ConversationStage;
+  awaiting?: AwaitingField;
+  debug?: { aiUsed: boolean; operation: string; stage: ConversationStage };
   warnings?: string[];
   upgradeAnalysis?: UpgradeAnalysis;
   flow?: BuilderFlow;
+  lastRecommendedProductSlug?: string;
+  lastComparedProductSlugs?: string[];
+  lastBuilderAdviceTopic?: string;
+  builderPreference?: "balanced" | "cheaper" | "powerful";
+}
+
+export interface ComponentCandidate extends Product {
+  compatibility: "COMPATIBLE" | "INCOMPATIBLE" | "UNKNOWN";
+  compatibilityReasons: string[];
+  recommendationScore: number;
+  budgetImpact: number;
+  recommendedRole?: "RECOMMENDED" | "BEST_VALUE" | "BUDGET" | "PREMIUM";
+  strengths: string[];
+  weaknesses: string[];
 }
 
 export interface CurrentPc {
@@ -154,6 +178,7 @@ export interface BuildSummary {
   warnings: string[];
   compatibilityIssues?: CompatibilityIssue[];
   compatible: boolean;
+  compatibility?: "COMPATIBLE" | "INCOMPATIBLE" | "UNKNOWN";
 }
 
 export interface CompatibilityIssue {

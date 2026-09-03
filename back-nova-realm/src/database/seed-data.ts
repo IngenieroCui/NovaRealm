@@ -17,7 +17,7 @@ export interface ProductSeed {
   productivityScore?: number;
   upgradeabilityScore?: number;
   features?: string[];
-  technicalSpecs?: Record<string, string | number | boolean>;
+  technicalSpecs?: Record<string, string | number | boolean | string[]>;
 }
 
 export interface WorkloadSeed {
@@ -108,17 +108,29 @@ const component = (
   features: ['Precio en COP', 'Stock administrable'],
 });
 
-function specsForComponent(name: string, type: string): Record<string, string | number | boolean> {
+function specsForComponent(name: string, type: string): Record<string, string | number | boolean | string[]> {
   const normalized = name.toLowerCase();
-  if (type === 'CPU') return { socket: normalized.includes('7950') || normalized.includes('7800') || normalized.includes('ryzen 7 7') || normalized.includes('ryzen 5 7') ? 'AM5' : normalized.includes('ryzen') ? 'AM4' : 'LGA1700', tdpW: normalized.includes('7950') ? 170 : normalized.includes('7800') || normalized.includes('7700') ? 105 : 65 };
-  if (type === 'GPU') return { tdpW: normalized.includes('4080') ? 320 : normalized.includes('4070') || normalized.includes('7800') ? 250 : 160 };
-  if (type === 'RAM') return { memoryType: normalized.includes('ddr5') ? 'DDR5' : 'DDR4', speedMt: Number(normalized.match(/(\d{4})/)?.[1] ?? 3200) };
-  if (type === 'PSU') return { wattage: Number(normalized.match(/(\d+)\s*w/)?.[1] ?? 650) };
-  if (type === 'MOTHERBOARD') return { socket: normalized.includes('b650') ? 'AM5' : normalized.includes('b760') || normalized.includes('z790') ? 'LGA1700' : 'AM4', memoryType: normalized.includes('b650') || normalized.includes('b760') || normalized.includes('z790') ? 'DDR5' : 'DDR4' };
+  if (type === 'CPU') {
+    const socket = normalized.includes('7950') || normalized.includes('7800') || normalized.includes('ryzen 7 7') || normalized.includes('ryzen 5 7') ? 'AM5' : normalized.includes('ryzen') ? 'AM4' : 'LGA1700';
+    const cores = normalized.includes('7950') ? 16 : normalized.includes('7800') || normalized.includes('7700') ? 8 : normalized.includes('i5-14') ? 10 : normalized.includes('i5-12') || normalized.includes('ryzen 5') ? 6 : 4;
+    return { socket, cores, threads: cores * 2, tdpW: normalized.includes('7950') ? 170 : normalized.includes('7800') || normalized.includes('7700') ? 105 : 65, performanceTier: cores >= 12 ? 'enthusiast' : cores >= 8 ? 'high' : cores >= 6 ? 'mid' : 'entry' };
+  }
+  if (type === 'GPU') {
+    const tdpW = normalized.includes('4080') ? 320 : normalized.includes('4070') || normalized.includes('7800') ? 250 : normalized.includes('7700') ? 245 : 160;
+    return { vramGb: Number(normalized.match(/(\d+)\s*gb/)?.[1] ?? 8), tdpW, recommendedPsuWatts: tdpW >= 300 ? 750 : tdpW >= 240 ? 650 : 550 };
+  }
+  if (type === 'RAM') return { ramType: normalized.includes('ddr5') ? 'DDR5' : 'DDR4', capacityGb: Number(normalized.match(/(\d+)\s*gb/)?.[1] ?? 16), speed: Number(normalized.match(/(\d{4})/)?.[1] ?? 3200) };
+  if (type === 'PSU') return { wattage: Number(normalized.match(/(\d+)\s*w/)?.[1] ?? 650), efficiency: normalized.includes('platinum') ? '80+ Platinum' : normalized.includes('gold') ? '80+ Gold' : '80+ Bronze' };
+  if (type === 'MOTHERBOARD') {
+    const socket = normalized.includes('b650') || normalized.includes('x670') ? 'AM5' : normalized.includes('b760') || normalized.includes('z790') || normalized.includes('h610') ? 'LGA1700' : 'AM4';
+    return { socket, ramType: normalized.includes('b650') || normalized.includes('x670') || normalized.includes('b760') || normalized.includes('z790') ? 'DDR5' : 'DDR4', formFactor: normalized.includes('creator') ? 'ATX' : 'MATX' };
+  }
+  if (type === 'COOLING') return { supportedSockets: ['AM4', 'AM5', 'LGA1700'], maxTdpW: normalized.includes('360') ? 280 : normalized.includes('240') ? 220 : normalized.includes('dual') ? 180 : normalized.includes('tower') ? 150 : 95 };
+  if (type === 'CASE') return { supportedFormFactors: normalized.includes('compact') ? ['MATX', 'ITX'] : ['ATX', 'MATX', 'ITX'] };
   return {};
 }
 
-const peripheral = (name: string, slug: string, type: string, price: number, features: string[], technicalSpecs: Record<string, string | number | boolean>): ProductSeed => {
+const peripheral = (name: string, slug: string, type: string, price: number, features: string[], technicalSpecs: Record<string, string | number | boolean | string[]>): ProductSeed => {
   const monitorSpecs: Record<string, string | number | boolean> = type === 'MONITOR' ? {
     sizeInches: Number(name.match(/(\d+)\s*(?:pulgadas|\")?/i)?.[1] ?? 24),
     panelType: 'IPS',

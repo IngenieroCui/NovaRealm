@@ -14,7 +14,7 @@ export enum ProductType {
   HEADSET = 'HEADSET',
 }
 
-export type ProductTechnicalSpecs = Record<string, string | number | boolean>;
+export type ProductTechnicalSpecs = Record<string, string | number | boolean | string[]>;
 
 export interface Product {
   id: number;

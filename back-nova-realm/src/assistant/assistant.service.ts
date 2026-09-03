@@ -1,281 +1,185 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { AiService } from '../ai/ai.service';
+import { AiService, ChatTurnResult } from '../ai/ai.service';
+import { BuilderService, ComponentCandidate } from '../builder/builder.service';
+import { ProductType } from '../catalog/product.types';
+import { CatalogService } from '../catalog/catalog.service';
+import { RecommendationRequestDto } from '../recommendations/recommendation.dto';
 import { RecommendationsService } from '../recommendations/recommendations.service';
 import { WorkloadsService } from '../workloads/workloads.service';
-import { ChatRequestDto, CompareRequestDto } from './assistant.dto';
-import { AssistantContextDto, ShoppingIntent } from './assistant.dto';
-import { BuilderService } from '../builder/builder.service';
-import { Product, ProductType } from '../catalog/product.types';
-import { CatalogService } from '../catalog/catalog.service';
+import { AssistantActionRequestDto, AssistantContextDto, AwaitingField, ChatRequestDto, CompareRequestDto, ConversationCriteriaDto, ConversationStage, QuickReplyDto, ShoppingIntent } from './assistant.dto';
+import { builderReply, messageReply, quickRepliesFor } from './quick-reply.factory';
 
 const BUILDER_COMPONENT_TYPES = [ProductType.CPU, ProductType.MOTHERBOARD, ProductType.RAM, ProductType.GPU, ProductType.STORAGE, ProductType.PSU, ProductType.COOLING, ProductType.CASE];
-
 const WINDOWS_SPECS_COMMAND = `$cpu=(Get-CimInstance Win32_Processor).Name; $gpu=(Get-CimInstance Win32_VideoController).Name -join ', '; $ram=[math]::Round(((Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum).Sum/1GB)); $board=(Get-CimInstance Win32_BaseBoard | ForEach-Object { $_.Manufacturer + ' ' + $_.Product }) -join ', '; $disk=(Get-CimInstance Win32_DiskDrive).Model -join ', '; [pscustomobject]@{ CPU=$cpu; GPU=$gpu; RAM="$ram GB"; Motherboard=$board; Storage=$disk } | Format-List`;
-
 const SYSTEM_INFO_GUIDE = {
-  title: 'Obtener las especificaciones en Windows',
-  command: WINDOWS_SPECS_COMMAND,
-  steps: [
-    'Haz clic derecho en Inicio y abre Terminal o PowerShell. No necesitas permisos de administrador.',
-    'Copia y pega el comando, presiona Enter y espera unos segundos.',
-    'Copia aquí el resultado. El comando solo lee nombres de hardware; no cambia nada ni muestra archivos personales.',
-  ],
+  title: 'Obtener las especificaciones en Windows', command: WINDOWS_SPECS_COMMAND,
+  steps: ['Haz clic derecho en Inicio y abre Terminal o PowerShell. No necesitas permisos de administrador.', 'Copia y pega el comando, presiona Enter y espera unos segundos.', 'Copia aquí el resultado. El comando solo lee nombres de hardware; no cambia nada ni muestra archivos personales.'],
   note: 'La fuente de poder no aparece en Windows. Si luego recomendamos una GPU, te pediré mirar la etiqueta de la fuente o enviar su modelo.',
 };
 
 @Injectable()
 export class AssistantService {
-  constructor(
-    private readonly ai: AiService,
-    private readonly workloads: WorkloadsService,
-    private readonly recommendations: RecommendationsService,
-    private readonly builder: BuilderService,
-    private readonly catalog: CatalogService,
-  ) {}
+  constructor(private readonly ai: AiService, private readonly workloads: WorkloadsService, private readonly recommendations: RecommendationsService, private readonly builder: BuilderService, private readonly catalog: CatalogService) {}
 
   async chat(input: ChatRequestDto) {
-    const contextProduct = input.context?.productSlug
-      ? await this.catalog.findBySlug(input.context.productSlug).catch(() => null)
-      : null;
-    const analysisMessage = contextProduct
-      ? `Producto que el usuario está viendo (dato verificado): ${contextProduct.name}, tipo ${contextProduct.type}, precio ${contextProduct.price}, stock ${contextProduct.stock}.\nMensaje: ${input.message}`
-      : input.message;
-    const componentType = this.detectComponentType(input.message, input.context);
+    const previousCriteria = input.criteria ?? input.filters ?? {};
+    const direct = input.quickReply ? this.applyQuickReply(input.quickReply, previousCriteria) : null;
+    const analysisMessage = await this.withProductContext(input.message, input.context);
+    let aiTurn: ChatTurnResult | null = null;
+    if (!direct) {
+      try { aiTurn = await this.ai.chatTurn(analysisMessage, input.conversation ?? [], await this.workloads.findAll(), previousCriteria, input.context?.shoppingIntent ?? input.shoppingIntent); }
+      catch { return this.aiUnavailable(previousCriteria, input.context?.shoppingIntent ?? input.shoppingIntent); }
+    }
     const explicitIntent = this.detectExplicitShoppingIntent(input.message);
     const previousIntent = input.context?.shoppingIntent ?? input.shoppingIntent;
-    const detectedIntent = explicitIntent ?? input.shoppingIntent ?? input.context?.shoppingIntent ?? this.detectShoppingIntent(input.message);
-    const intentChanged = Boolean(explicitIntent && previousIntent && explicitIntent !== previousIntent);
-    const intent = detectedIntent === ShoppingIntent.UPGRADE_PC
-      ? { needsMoreInformation: true, filters: input.filters }
-      : await this.ai.interpret(
-          analysisMessage,
-          input.conversation ?? [],
-          await this.workloads.findAll(),
-          input.filters,
-        );
-    // The user-selected intent and these small deterministic cues have priority over
-    // an ambiguous model classification; the model is still used for needs/filters.
-    const shoppingIntent = detectedIntent;
-    const currentBuild = input.context?.buildSlugs ?? [];
-    const builderMode = intentChanged ? undefined : input.context?.builderMode;
-    const assemblySelected = input.context?.assemblySelected ?? false;
-    const budgetMax = intent.filters?.budgetMax ?? this.extractBudget(input.message);
-    if (this.isFinishRequest(input.message) && currentBuild.length) {
-      const build = await this.builder.summarize({ itemSlugs: currentBuild, budgetMax, assemblySelected, workloads: intent.filters?.workloads });
-      return { message: build.products.length === 1 ? 'Listo. Te dejo este producto listo para cotizar.' : 'Listo, dejamos la configuración hasta aquí. Te muestro el resumen para que la revises con calma.', needsMoreInformation: false, shoppingIntent, filters: intent.filters ?? null, recommendations: [], build, quickActions: ['Cotizar por WhatsApp', 'Cambiar una pieza', 'Agregar algo más'] };
-    }
-    if (input.context?.buildSlugs?.length && /ensambl|armado por novarealm/i.test(input.message)) {
-      return { message: 'Valido el servicio de ensamble para tu configuración actual.', needsMoreInformation: false, shoppingIntent: ShoppingIntent.CUSTOM_PC, filters: intent.filters ?? null, recommendations: [], actions: [{ action: 'ADD_ASSEMBLY', label: 'Agregar ensamble' }], quickActions: ['Abrir configurador', 'Cotizar'] };
-    }
-    if (input.context?.buildSlugs?.length && /(?:reinicia|reiniciar|limpia|limpiar|borrar).*(?:config|build|seleccion)/i.test(input.message)) {
-      return { message: 'Listo, puedo dejar la configuración vacía para empezar de nuevo.', needsMoreInformation: false, shoppingIntent: ShoppingIntent.CUSTOM_PC, filters: intent.filters ?? null, recommendations: [], actions: [{ action: 'CLEAR_BUILD', label: 'Reiniciar configuración' }] };
-    }
-    if (contextProduct && /vale la pena|me sirve|sirve para|qué opinas|que opinas/i.test(input.message)) {
-      const note = contextProduct.type === ProductType.PREBUILT_PC
-        ? (Number(contextProduct.gpuScore ?? 0) >= 85 ? 'Tiene un perfil fuerte para jugar y crear.' : 'Tiene un perfil equilibrado para jugar y crear sin irse al extremo.')
-        : contextProduct.type === ProductType.MONITOR
-          ? `Lo importante aquí es que su resolución y refresh rate coincidan con tu uso.`
-          : 'La decisión depende sobre todo de su compatibilidad con el resto de tu equipo y de tu presupuesto.';
-      return { message: `Sí, puedo orientarte sobre ${contextProduct.name}. ${note} Si me dices tu uso principal, te digo si lo elegiría frente a alternativas reales.`, needsMoreInformation: false, shoppingIntent, currentProduct: contextProduct, filters: intent.filters ?? null, recommendations: [], quickActions: ['Comparar similares', 'Cotizar', 'Agregar a build'] };
-    }
-    const wantsBuildChange = /\b(pon|agrega|añade|anade|usa|mete|cambia|reemplaza)\b/i.test(input.message);
-    if (contextProduct && wantsBuildChange && input.context?.buildSlugs) {
-      return {
-        message: `Puedo añadir ${contextProduct.name} a tu configuración. Confirma el cambio desde la acción para validar stock y compatibilidad.`,
-        needsMoreInformation: false,
-        shoppingIntent: ShoppingIntent.CUSTOM_PC,
-        filters: intent.filters ?? null,
-        recommendations: [],
-        actions: [{ action: 'REPLACE_COMPONENT', productId: contextProduct.id, productSlug: contextProduct.slug, label: `Poner ${contextProduct.name}` }],
-        quickActions: ['Abrir configurador'],
-      };
-    }
-    if (shoppingIntent === ShoppingIntent.COMPONENT && componentType) {
-      if (!intent.filters?.workloads?.length) {
-        return { message: `Antes de mostrarte ${this.productTypeLabel(componentType)}, cuéntame qué quieres mejorar o qué juego/programa usarás. Así no te vendo una pieza más cara de lo necesario.`, needsMoreInformation: true, shoppingIntent, componentType, filters: intent.filters ?? null, recommendations: [], quickActions: ['Gaming', 'Trabajo y estudio', 'Edición o diseño', 'Uso general'] };
-      }
-      if (!budgetMax) {
-        return { message: `Ya entiendo el uso. ¿Cuánto te gustaría gastar como máximo en ${this.productTypeLabel(componentType)}? Un valor aproximado está bien.`, needsMoreInformation: true, shoppingIntent, componentType, filters: intent.filters ?? null, recommendations: [], quickActions: ['$500.000 COP', '$1.000.000 COP', '$2.000.000 COP'] };
-      }
-      const componentResult = await this.builder.recommendComponents({ componentType, itemSlugs: currentBuild, budgetMax, assemblySelected, workloads: intent.filters?.workloads, preference: /potente|mejor|premium/i.test(input.message) ? 'powerful' : /barat|econom/i.test(input.message) ? 'cheaper' : undefined });
-      const lead = componentResult.recommendations[0];
-      return { message: contextProduct ? `Estás viendo ${contextProduct.name}. Comparé alternativas disponibles dentro de tu presupuesto y compatibles con lo que ya llevas en la configuración.` : lead ? `Yo empezaría por ${lead.name}. Es la primera opción que revisaría para tu uso y presupuesto; antes de comprar, confirmemos motherboard, fuente y espacio físico si no están en tu configuración.` : 'No encontré una opción responsable dentro de ese presupuesto. Prefiero ajustar el límite contigo antes que recomendarte algo que no encaje.', needsMoreInformation: false, shoppingIntent, componentType, currentProduct: contextProduct, filters: intent.filters ?? null, recommendations: [], componentRecommendations: componentResult.recommendations, quickActions: ['Más barato', 'Más potente', 'Revisar compatibilidad', 'Hasta ahí'], warnings: componentResult.warnings, build: currentBuild.length ? await this.builder.summarize({ itemSlugs: currentBuild, budgetMax, assemblySelected, workloads: intent.filters?.workloads }) : undefined };
-    }
-    if (shoppingIntent === ShoppingIntent.COMPONENT) {
-      return { message: '¿Qué componente buscas: GPU, CPU, RAM, almacenamiento o monitor?', needsMoreInformation: true, shoppingIntent, filters: intent.filters ?? null, recommendations: [], quickActions: ['GPU', 'CPU', 'RAM', 'Monitor'] };
-    }
-    if (shoppingIntent === ShoppingIntent.CUSTOM_PC) {
-      if (!intent.filters?.workloads?.length) {
-        return { message: intent.question ?? 'Primero quiero entender para qué la vas a usar. ¿Qué juegos, programas o tareas son los más importantes para ti?', needsMoreInformation: true, shoppingIntent, filters: intent.filters ?? null, recommendations: [], quickActions: ['Gaming', 'Edición y diseño', 'Programación', 'Trabajo y estudio'] };
-      }
-      if (!budgetMax) {
-        return { message: 'Perfecto, ya sé qué rendimiento buscar. ¿Cuál es el presupuesto máximo para la torre? Si también necesitas monitor o periféricos, dímelo para separar bien el dinero.', needsMoreInformation: true, shoppingIntent, filters: intent.filters ?? null, recommendations: [], quickActions: ['$3 millones', '$5 millones', '$7 millones'] };
-      }
-      const currentSummary = currentBuild.length ? await this.builder.summarize({ itemSlugs: currentBuild, budgetMax, assemblySelected, workloads: intent.filters?.workloads }) : null;
-      const wantsAuto = /(?:recomiend|elige|escoge|armala|ármala|hazla|hazlo|por mi|por mí|configuracion completa|configuración completa)/i.test(input.message);
-      const wantsGuided = /(?:paso a paso|guiar|guiame|guíame|pieza por pieza)/i.test(input.message);
-      if (wantsAuto && !budgetMax) return { message: 'Puedo armarla por ti. ¿Cuál es tu presupuesto máximo aproximado?', needsMoreInformation: true, shoppingIntent, filters: intent.filters ?? null, recommendations: [] };
-      if (!currentBuild.length && !wantsAuto && !wantsGuided && builderMode !== 'GUIDED' && builderMode !== 'AUTO') {
-        return { message: 'Podemos hacerlo pieza por pieza o te propongo una configuración completa. ¿Qué prefieres?', needsMoreInformation: false, shoppingIntent, filters: intent.filters ?? null, recommendations: [], actions: [{ action: 'START_GUIDED', label: 'Guiarme paso a paso' }, { action: 'AUTO_BUILD', label: 'Recomiéndamela completa' }] };
-      }
-      const build = /(?:más barato|mas barato|ahorrar|bajar el precio)/i.test(input.message) && currentSummary
-        ? await this.builder.autoBuild({ budgetMax: Math.max(500000, Math.min(budgetMax ?? currentSummary.total, currentSummary.total - 300000)), workloadSlugs: intent.filters?.workloads.map((item) => item.slug), assembly: assemblySelected })
-        : currentBuild.length
-        ? await this.builder.summarize({ itemSlugs: currentBuild, budgetMax, assemblySelected, workloads: intent.filters?.workloads })
-        : budgetMax
-          ? await this.builder.autoBuild({ budgetMax, workloadSlugs: intent.filters?.workloads.map((item) => item.slug), assembly: assemblySelected })
-          : await this.builder.summarize({ itemSlugs: [], budgetMax, assemblySelected, workloads: intent.filters?.workloads });
-      const effectiveMode = builderMode ?? (wantsAuto ? 'AUTO' : 'GUIDED');
-      const nextStep = (await this.builder.flow(build.products.map((product) => product.slug), effectiveMode)).currentStep;
-      const requestedType = componentType ?? (nextStep === 'DONE' ? undefined : nextStep as ProductType);
-      const alternatives = requestedType ? await this.builder.recommendComponents({ componentType: requestedType, itemSlugs: build.products.map((product) => product.slug), budgetMax, assemblySelected, workloads: intent.filters?.workloads, preference: /potente|mejor/i.test(input.message) ? 'powerful' : /barat|econom/i.test(input.message) ? 'cheaper' : undefined }) : null;
-      return { message: alternatives?.recommendations.length ? (componentType ? `Te muestro opciones compatibles para ${this.productTypeLabel(componentType)}.` : `Sigamos con ${this.productTypeLabel(requestedType as ProductType)}. Te muestro solo opciones compatibles.`) : build.products.length ? 'Listo, ya tienes una base compatible. Puedes ajustar cualquier pieza desde aquí.' : 'No puedo completar una configuración razonable dentro de ese presupuesto con el catálogo actual.', needsMoreInformation: !budgetMax, shoppingIntent, filters: intent.filters ?? null, recommendations: [], componentRecommendations: alternatives?.recommendations, build, flow: await this.builder.flow(build.products.map((product) => product.slug), effectiveMode), actions: alternatives?.recommendations.length && requestedType ? [{ action: 'AUTO_SELECT', componentType: requestedType, label: 'Que Nova elija' }] : undefined, quickActions: ['Más barato', 'Cambiar una pieza', 'Agregar periféricos', 'Agregar ensamble', 'Cotizar'] };
-    }
-    if (shoppingIntent === ShoppingIntent.UPGRADE_PC) {
-      const currentPc = this.mergeCurrentPc(input.context?.currentPc, this.extractCurrentPc(input.message));
-      const missing = [!currentPc.cpu && 'procesador', !currentPc.gpu && 'tarjeta gráfica', !currentPc.ramGb && 'memoria RAM'].filter(Boolean) as string[];
-      const upgradeGoal = this.extractUpgradeGoal(input.message) ?? input.context?.upgradeGoal;
-      if (missing.length) {
-        return { message: `Para decirte qué vale la pena cambiar necesito ver tu equipo actual. Te dejo una forma fácil de obtenerlo; si prefieres, también puedes escribir los datos a mano. Me falta: ${missing.join(', ')}.`, needsMoreInformation: true, shoppingIntent, currentPc, upgradeGoal: upgradeGoal ?? null, systemInfoGuide: SYSTEM_INFO_GUIDE, filters: intent.filters ?? null, recommendations: [], quickActions: ['Prefiero escribirlos', '¿Dónde miro la fuente?'] };
-      }
-      if (!upgradeGoal) {
-        return { message: 'Gracias, ya tengo la base del equipo. Ahora cuéntame qué te está molestando o qué quieres lograr: menciona juegos o programas, resolución/FPS si juegas y si notas lentitud, tirones o falta de espacio.', needsMoreInformation: true, shoppingIntent, currentPc, filters: intent.filters ?? null, recommendations: [], quickActions: ['Más FPS en juegos', 'Editar y renderizar', 'Multitarea', 'Me falta espacio'] };
-      }
-      if (!budgetMax) {
-        return { message: `Entiendo el objetivo: ${upgradeGoal}. ¿Cuál es el máximo que invertirías ahora? Con eso separo la mejora imprescindible de la que puede esperar.`, needsMoreInformation: true, shoppingIntent, currentPc, upgradeGoal, filters: intent.filters ?? null, recommendations: [], quickActions: ['$1 millón', '$2 millones', '$3 millones'] };
-      }
-      const upgrade = await this.builder.analyzeUpgrade({ ...currentPc, goal: upgradeGoal, budgetMax });
-      const priorityLabel = upgrade.priority === ProductType.GPU ? 'la tarjeta gráfica' : upgrade.priority === ProductType.RAM ? 'la memoria RAM' : upgrade.priority === ProductType.STORAGE ? 'el almacenamiento' : 'el procesador';
-      return { message: upgrade.bestFirstUpgrade ? `Yo empezaría por ${priorityLabel}. ${upgrade.bottleneck} ${upgrade.assessment} No compraría todavía: primero revisaría las comprobaciones de compatibilidad de abajo.` : `No encontré una mejora suficientemente clara dentro de ${budgetMax} COP. Prefiero que conserves el dinero o ajustemos el objetivo antes que venderte un cambio pequeño.`, needsMoreInformation: false, shoppingIntent, currentPc, upgradeGoal, upgradeAnalysis: upgrade, filters: intent.filters ?? null, recommendations: [], upgradeRecommendations: upgrade.recommendations, quickActions: ['Ver opciones baratas', 'Cambiar presupuesto', 'Revisar compatibilidad'] };
-    }
-    if (intent.needsMoreInformation || !intent.filters) {
-      return {
-        message:
-          intent.question ??
-          '¿Cuál es tu presupuesto y qué programas o juegos usarás?',
-        needsMoreInformation: true,
-        filters: intent.filters ?? input.filters ?? null,
-        recommendations: [],
-        shoppingIntent,
-        quickActions: ['PC completo', 'Armar por componentes', 'Mejorar mi PC', 'Buscar un componente'],
-      };
-    }
-
-    const result = await this.recommendations.recommend(intent.filters);
-    if (!result.recommendations.length) {
-      return {
-        message:
-          'No encontré equipos disponibles que cumplan esos mínimos dentro del presupuesto. Podemos aumentar el presupuesto o ajustar un poco el objetivo.',
-        needsMoreInformation: false,
-        filters: intent.filters,
-        recommendations: [], shoppingIntent, quickActions: ['Más barato', 'Más potente', 'Ajustar presupuesto'],
-      };
-    }
-    const message = await this.ai.explainRecommendations(
-      intent.filters,
-      result.recommendations,
-    );
-    return {
-      message,
-      needsMoreInformation: false,
-      filters: intent.filters,
-      recommendations: result.recommendations,
-      scoring: result.scoring,
-      shoppingIntent,
-      quickActions: shoppingIntent === ShoppingIntent.PC_WITH_PERIPHERALS ? ['Agregar monitor', 'Agregar teclado y mouse', 'Comprar'] : ['Más barato', 'Más potente', 'Compararlos', 'Comprar'],
-      peripheralRecommendations: shoppingIntent === ShoppingIntent.PC_WITH_PERIPHERALS ? await this.builder.recommendPeripherals(Math.max(0, (intent.filters.budgetMax ?? 0) - (result.recommendations[0]?.product.price ?? 0))) : [],
-    };
+    const inferredIntent = aiTurn?.shoppingIntent;
+    const shoppingIntent = direct?.intent ?? explicitIntent ?? ((aiTurn?.intentChanged || !previousIntent) && (aiTurn?.intentConfidence ?? 0) >= 0.55 ? inferredIntent : undefined) ?? previousIntent ?? inferredIntent ?? this.detectShoppingIntent(input.message);
+    const intentChanged = Boolean(previousIntent && shoppingIntent !== previousIntent);
+    const criteria = this.mergeCriteria(previousCriteria, aiTurn?.extracted, this.extractDeterministicCriteria(input.message, input.context), direct?.criteria);
+    const builderMode = intentChanged ? direct?.builderMode : direct?.builderMode ?? aiTurn?.builderPreference ?? input.context?.builderMode;
+    const base = this.base(shoppingIntent, criteria);
+    if (shoppingIntent === ShoppingIntent.CUSTOM_PC && builderMode === 'GUIDED' && input.context?.builderStep && BUILDER_COMPONENT_TYPES.includes(input.context.builderStep as ProductType)) return this.handleGuidedBuilder(input, criteria, base);
+    if (shoppingIntent === ShoppingIntent.UPGRADE_PC) return this.handleUpgrade(input, criteria, aiTurn, base);
+    if (shoppingIntent === ShoppingIntent.COMPONENT) return this.handleComponent(input, criteria, aiTurn, base);
+    if (shoppingIntent === ShoppingIntent.CUSTOM_PC) return this.handleCustomPc(input, criteria, builderMode, aiTurn, base);
+    return this.handlePrebuilt(input, criteria, aiTurn, base);
   }
 
-  private detectExplicitShoppingIntent(message: string): ShoppingIntent | undefined {
-    const value = this.normalize(message);
-    if (/(?:quiero|mejor).*(?:lista|pc|computador|equipo).*(?:armad|listo|prearmad)|(?:pc|computador|equipo)\s+(?:ya\s+)?armad[oa]|comprar\s+(?:un\s+)?(?:pc|computador|equipo)\s+listo/.test(value)) return ShoppingIntent.PREBUILT_PC;
-    if (/mejorar|upgrade|actualizar\s+mi\s+(?:pc|computador|equipo)|tengo\s+un\s+(?:pc|computador|equipo)/.test(value)) return ShoppingIntent.UPGRADE_PC;
-    if (/buscar\s+(?:un\s+)?componente|solo\s+(?:una\s+)?(?:gpu|cpu|procesador|ram|memoria|disco|ssd|fuente)|quiero\s+(?:una\s+)?(?:gpu|cpu|procesador|ram|memoria|disco|ssd|fuente)/.test(value)) return ShoppingIntent.COMPONENT;
-    if (/armar\s+(?:mi\s+)?(?:pc|computador|equipo)|pc\s+por\s+componentes|por\s+partes|configuracion\s+personalizada/.test(value)) return ShoppingIntent.CUSTOM_PC;
-    if (/(?:pc|computador|equipo).*(?:monitor|teclado|mouse|audifono|perifer)/.test(value)) return ShoppingIntent.PC_WITH_PERIPHERALS;
-    return undefined;
+  async action(input: AssistantActionRequestDto) {
+    const criteria = input.criteria ?? {};
+    const result = await this.builder.applyAction(input.builderAction);
+    const candidates = (result.recommendations ?? []) as ComponentCandidate[];
+    const recommended = candidates.find((item) => item.recommendedRole === 'RECOMMENDED') ?? candidates[0];
+    let message: string;
+    try {
+      message = await this.ai.answerWithVerifiedContext('builder-action', 'Explica en 30-80 palabras el resultado confirmado. Si se eligió una pieza, explica por qué encaja y presenta el siguiente paso. No afirmes una acción que el resultado no confirme.', input.builderAction.label ?? input.builderAction.action, { action: result.action, selectedProduct: result.product, build: result.summary, flow: result.flow, nextCandidates: candidates.slice(0, 5), criteria });
+    } catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build: result.summary, flow: result.flow, componentRecommendations: candidates }); }
+    return this.response({ message, ...this.base(ShoppingIntent.CUSTOM_PC, criteria), build: result.summary, flow: result.flow, componentRecommendations: candidates, lastRecommendedProductSlug: recommended?.slug, lastComparedProductSlugs: [], lastBuilderAdviceTopic: result.flow?.currentStep, builderPreference: input.context?.builderPreference, quickReplies: this.builderConversationReplies(result.flow?.currentStep) }, result.flow?.currentStep === 'DONE' ? ConversationStage.COMPLETE : ConversationStage.BUILDER, null, true, 'builder-action');
   }
 
-  private detectShoppingIntent(message: string): ShoppingIntent {
-    const value = this.normalize(message);
-    if (/perifer|monitor|teclado|mouse|audifono|headset|240\s*hz/.test(value) && /pc|computador|equipo|monitor/.test(value)) return ShoppingIntent.PC_WITH_PERIPHERALS;
-    if (/mejor|upgrade|actualizar|tengo.*(ryzen|intel|rtx|gtx|rx)/.test(value)) return ShoppingIntent.UPGRADE_PC;
-    if (/armar|personaliz|componentes|por partes|configur/.test(value)) return ShoppingIntent.CUSTOM_PC;
-    if (/solo|unicamente|componente|gpu|tarjeta grafica|procesador|ram|ssd|fuente/.test(value)) return ShoppingIntent.COMPONENT;
-    return ShoppingIntent.PREBUILT_PC;
+  private async handlePrebuilt(input: ChatRequestDto, criteria: ConversationCriteriaDto, turn: ChatTurnResult | null, base: Record<string, unknown>) {
+    const awaiting = this.discoveryAwaiting(criteria);
+    if (awaiting) return this.discoveryResponse(input, criteria, turn, base, awaiting, awaiting === 'USE' ? ConversationStage.DISCOVER_USE : ConversationStage.DISCOVER_BUDGET);
+    const filters = this.toRecommendationRequest(criteria);
+    const result = await this.recommendations.recommend(filters);
+    let message: string;
+    try { message = result.recommendations.length ? await this.ai.explainRecommendations(filters, result.recommendations) : await this.ai.answerWithVerifiedContext('recommendation-answer', 'Explica que no hay opciones responsables y propone ajustar un solo criterio.', input.message, { criteria, availableRecommendations: [] }); }
+    catch { return this.aiUnavailable(criteria, base.shoppingIntent as ShoppingIntent); }
+    return this.response({ message, ...base, filters, criteria, recommendations: result.recommendations, scoring: result.scoring, quickReplies: [] }, ConversationStage.RECOMMENDING, null, true, 'recommendation-answer');
   }
 
-  private detectComponentType(message: string, context?: AssistantContextDto): ProductType | undefined {
-    const value = this.normalize(message);
-    if (/gpu|tarjeta grafica|video/.test(value)) return ProductType.GPU;
-    if (/cpu|procesador/.test(value)) return ProductType.CPU;
-    if (/ram|memoria/.test(value)) return ProductType.RAM;
-    if (/ssd|disco|almacenamiento/.test(value)) return ProductType.STORAGE;
-    if (/fuente|psu/.test(value)) return ProductType.PSU;
-    if (/monitor|240\s*hz/.test(value)) return ProductType.MONITOR;
-    if (context?.builderStep && BUILDER_COMPONENT_TYPES.includes(context.builderStep as ProductType)) return context.builderStep as ProductType;
-    if (context?.selectedComponentType && Object.values(ProductType).includes(context.selectedComponentType as ProductType)) return context.selectedComponentType as ProductType;
-    return undefined;
+  private async handleCustomPc(input: ChatRequestDto, criteria: ConversationCriteriaDto, mode: 'GUIDED' | 'AUTO' | undefined, turn: ChatTurnResult | null, base: Record<string, unknown>) {
+    const awaiting = this.discoveryAwaiting(criteria);
+    if (awaiting) return this.discoveryResponse(input, criteria, turn, base, awaiting, awaiting === 'USE' ? ConversationStage.DISCOVER_USE : ConversationStage.DISCOVER_BUDGET);
+    if (!mode) return this.discoveryResponse(input, criteria, turn, base, 'BUILDER_MODE', ConversationStage.BUILDER_MODE);
+    const workloads = criteria.workloads ?? [];
+    if (mode === 'AUTO') {
+      const build = await this.builder.autoBuild({ budgetMax: criteria.budgetMax!, workloadSlugs: workloads.map((item) => item.slug), assembly: input.context?.assemblySelected });
+      const flow = await this.builder.flow(build.products.map((item) => item.slug), 'AUTO');
+      let message: string;
+      try { message = await this.ai.answerWithVerifiedContext('builder-answer', 'Presenta la configuración calculada, señala el compromiso principal y ofrece responder dudas. No enumeres todas las cards.', input.message, { criteria, build, flow }); }
+      catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build, flow }); }
+      return this.response({ message, ...base, build, flow, quickReplies: [] }, ConversationStage.COMPLETE, null, true, 'builder-answer');
+    }
+    const result = await this.builder.applyAction({ action: 'START_GUIDED', currentSlugs: input.context?.buildSlugs ?? [], budgetMax: criteria.budgetMax, workloads, mode: 'GUIDED', assemblySelected: input.context?.assemblySelected });
+    let message: string;
+    try { message = await this.ai.answerWithVerifiedContext('builder-answer', 'Da inicio al armado guiado, explica brevemente qué se decide primero y que las opciones mostradas ya respetan el contexto disponible.', input.message, { criteria, build: result.summary, flow: result.flow, candidates: result.recommendations }); }
+    catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build: result.summary, flow: result.flow }); }
+    const candidates = result.recommendations as ComponentCandidate[];
+    return this.response({ message, ...base, build: result.summary, flow: result.flow, componentRecommendations: candidates, lastRecommendedProductSlug: candidates.find((item) => item.recommendedRole === 'RECOMMENDED')?.slug ?? candidates[0]?.slug, quickReplies: this.builderConversationReplies(result.flow.currentStep) }, ConversationStage.BUILDER, null, true, 'builder-answer');
   }
 
+  private async handleComponent(input: ChatRequestDto, criteria: ConversationCriteriaDto, turn: ChatTurnResult | null, base: Record<string, unknown>) {
+    if (!criteria.requestedComponent) return this.discoveryResponse(input, criteria, turn, base, 'COMPONENT_SELECTION', ConversationStage.COMPONENT);
+    const awaiting = this.discoveryAwaiting(criteria);
+    if (awaiting) return this.discoveryResponse(input, criteria, turn, base, awaiting, awaiting === 'USE' ? ConversationStage.DISCOVER_USE : ConversationStage.DISCOVER_BUDGET);
+    const result = await this.builder.recommendComponents({ componentType: criteria.requestedComponent as ProductType, itemSlugs: input.context?.buildSlugs ?? [], budgetMax: criteria.budgetMax, workloads: criteria.workloads, assemblySelected: input.context?.assemblySelected });
+    let message: string;
+    try { message = await this.ai.answerWithVerifiedContext('component-answer', 'Elige una opción principal entre las candidatas verificadas, explica una razón y menciona cualquier verificación pendiente.', input.message, { criteria, candidates: result.recommendations, warnings: result.warnings }); }
+    catch { return this.aiUnavailable(criteria, ShoppingIntent.COMPONENT, { componentRecommendations: result.recommendations }); }
+    return this.response({ message, ...base, componentType: criteria.requestedComponent, componentRecommendations: result.recommendations, warnings: result.warnings, lastRecommendedProductSlug: result.recommendations.find((item) => item.recommendedRole === 'RECOMMENDED')?.slug ?? result.recommendations[0]?.slug, quickReplies: [] }, ConversationStage.COMPONENT, null, true, 'component-answer');
+  }
+
+  private async handleUpgrade(input: ChatRequestDto, criteria: ConversationCriteriaDto, turn: ChatTurnResult | null, base: Record<string, unknown>) {
+    const currentPc = this.mergeCurrentPc(input.context?.currentPc, this.extractCurrentPc(input.message));
+    const upgradeGoal = this.extractUpgradeGoal(input.message) ?? input.context?.upgradeGoal;
+    const missingPc = [!currentPc.cpu && 'procesador', !currentPc.gpu && 'tarjeta gráfica', !currentPc.ramGb && 'memoria RAM'].filter(Boolean) as string[];
+    if (missingPc.length) {
+      const message = await this.ensureQuestion(turn, 'Explica que necesitas las especificaciones actuales y menciona solo los datos faltantes.', input.message, { missingPc, currentPc });
+      return this.response({ message, ...base, currentPc, upgradeGoal: upgradeGoal ?? null, systemInfoGuide: SYSTEM_INFO_GUIDE, quickReplies: [] }, ConversationStage.UPGRADE, null, Boolean(turn), 'interpret+reply');
+    }
+    if (!upgradeGoal) return this.discoveryResponse(input, criteria, turn, { ...base, currentPc }, 'USE', ConversationStage.UPGRADE);
+    if (!criteria.budgetMax) return this.discoveryResponse(input, criteria, turn, { ...base, currentPc, upgradeGoal }, 'BUDGET', ConversationStage.UPGRADE);
+    const upgrade = await this.builder.analyzeUpgrade({ ...currentPc, goal: upgradeGoal, budgetMax: criteria.budgetMax });
+    let message: string;
+    try { message = await this.ai.answerWithVerifiedContext('upgrade-answer', 'Explica el diagnóstico calculado, toma postura sobre el primer cambio y destaca las comprobaciones pendientes. No recalcules compatibilidad.', input.message, { criteria, upgrade }); }
+    catch { return this.aiUnavailable(criteria, ShoppingIntent.UPGRADE_PC, { currentPc, upgradeGoal, upgradeAnalysis: upgrade }); }
+    return this.response({ message, ...base, currentPc, upgradeGoal, upgradeAnalysis: upgrade, upgradeRecommendations: upgrade.recommendations, quickReplies: [] }, ConversationStage.UPGRADE, null, true, 'upgrade-answer');
+  }
+
+  private async handleGuidedBuilder(input: ChatRequestDto, criteria: ConversationCriteriaDto, base: Record<string, unknown>) {
+    const currentSlugs = input.context?.buildSlugs ?? [];
+    const flow = await this.builder.flow(currentSlugs, 'GUIDED');
+    const build = await this.builder.summarize({ itemSlugs: currentSlugs, budgetMax: criteria.budgetMax, workloads: criteria.workloads, assemblySelected: input.context?.assemblySelected });
+    if (!BUILDER_COMPONENT_TYPES.includes(flow.currentStep as ProductType)) {
+      let message: string;
+      try { message = await this.ai.answerWithVerifiedContext('builder-answer', 'Responde la duda sobre la configuración terminada sin modificarla.', input.message, { criteria, build, flow }); }
+      catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build, flow }); }
+      return this.response({ message, ...base, build, flow, quickReplies: [] }, ConversationStage.COMPLETE, null, true, 'builder-answer');
+    }
+    const currentStep = flow.currentStep as ProductType;
+    const candidateResult = await this.builder.recommendComponents({ componentType: currentStep, itemSlugs: currentSlugs, budgetMax: criteria.budgetMax, workloads: criteria.workloads, assemblySelected: input.context?.assemblySelected, preference: input.context?.builderPreference === 'balanced' ? undefined : input.context?.builderPreference });
+    const candidates = candidateResult.recommendations;
+    const recommended = candidates.find((item) => item.recommendedRole === 'RECOMMENDED') ?? candidates[0];
+    let message: string;
+    try { message = await this.ai.answerBuilderQuestion(input.message, { workload: criteria.workloads ?? [], budgetMax: criteria.budgetMax, remainingBudget: build.budgetRemaining, currentStep, currentBuild: build.components, candidates, lastRecommendedProductSlug: input.context?.lastRecommendedProductSlug ?? recommended?.slug, lastComparedProductSlugs: input.context?.lastComparedProductSlugs, balanceWarnings: build.warnings }); }
+    catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build, flow, componentRecommendations: candidates }); }
+    return this.response({ message, ...base, build, flow, componentRecommendations: candidates, warnings: candidateResult.warnings, lastRecommendedProductSlug: recommended?.slug ?? input.context?.lastRecommendedProductSlug, lastComparedProductSlugs: input.context?.lastComparedProductSlugs, lastBuilderAdviceTopic: currentStep, builderPreference: input.context?.builderPreference, quickReplies: this.builderConversationReplies(currentStep) }, ConversationStage.BUILDER, null, true, 'builder-answer');
+  }
+
+  private async discoveryResponse(input: ChatRequestDto, criteria: ConversationCriteriaDto, turn: ChatTurnResult | null, base: Record<string, unknown>, awaiting: Exclude<AwaitingField, null>, stage: ConversationStage) {
+    let message = turn?.reply;
+    if (!message) {
+      try { message = await this.ai.answerWithVerifiedContext('structured-action', `Formula una sola pregunta contextual para obtener ${awaiting}. Reconoce primero lo que ya se conoce.`, input.message, { shoppingIntent: base.shoppingIntent, criteria, awaiting }); }
+      catch { return this.aiUnavailable(criteria, base.shoppingIntent as ShoppingIntent); }
+    }
+    return this.response({ message, ...base, criteria, filters: criteria, quickReplies: quickRepliesFor(awaiting, base.shoppingIntent as ShoppingIntent) }, stage, awaiting, true, input.quickReply ? 'structured-action' : 'interpret+reply');
+  }
+
+  private async ensureQuestion(turn: ChatTurnResult | null, instruction: string, userMessage: string, verified: unknown) {
+    if (turn?.reply) return turn.reply;
+    try { return await this.ai.answerWithVerifiedContext('structured-action', instruction, userMessage, verified); }
+    catch { return 'No pude consultar a Nova en este momento. Puedes intentar nuevamente.'; }
+  }
+
+  private response(value: Record<string, unknown>, stage: ConversationStage, awaiting: AwaitingField, aiUsed: boolean, operation: string) { return { ...value, stage, awaiting, needsMoreInformation: awaiting !== null, ...(process.env.NODE_ENV === 'development' ? { debug: { aiUsed, operation, stage } } : {}) }; }
+  private base(intent: ShoppingIntent, criteria: ConversationCriteriaDto) { return { shoppingIntent: intent, criteria, filters: criteria, recommendations: [] }; }
+  private aiUnavailable(criteria: ConversationCriteriaDto, intent?: ShoppingIntent, extra: Record<string, unknown> = {}) { const stage = intent === ShoppingIntent.CUSTOM_PC ? ConversationStage.BUILDER : intent === ShoppingIntent.UPGRADE_PC ? ConversationStage.UPGRADE : intent === ShoppingIntent.COMPONENT ? ConversationStage.COMPONENT : ConversationStage.DISCOVER_INTENT; return this.response({ message: 'No pude consultar a Nova en este momento. Puedes intentar nuevamente.', ...this.base(intent ?? ShoppingIntent.PREBUILT_PC, criteria), quickReplies: [], ...extra }, stage, null, false, 'fallback'); }
+  private discoveryAwaiting(criteria: ConversationCriteriaDto): 'USE' | 'BUDGET' | null { if (!criteria.workloads?.length) return 'USE'; if (!criteria.budgetMax) return 'BUDGET'; return null; }
+
+  private applyQuickReply(reply: QuickReplyDto, previous: ConversationCriteriaDto) {
+    if (reply.kind === 'SET_INTENT' && Object.values(ShoppingIntent).includes(reply.value as ShoppingIntent)) return { intent: reply.value as ShoppingIntent, criteria: previous };
+    if (reply.kind === 'SET_BUDGET' && typeof reply.value === 'number' && reply.value >= 500000) return { criteria: { ...previous, budgetMax: Math.round(reply.value) } };
+    if (reply.kind === 'SET_WORKLOAD' && typeof reply.value === 'string') return { criteria: { ...previous, workloads: [{ slug: reply.value, importance: 1 }] } };
+    if (reply.kind === 'SET_BUILDER_MODE' && ['GUIDED', 'AUTO'].includes(String(reply.value))) return { criteria: previous, builderMode: reply.value as 'GUIDED' | 'AUTO' };
+    if (reply.kind === 'SEND_MESSAGE') return null;
+    throw new BadRequestException('La respuesta rápida no es válida para este turno.');
+  }
+
+  private mergeCriteria(...values: Array<ConversationCriteriaDto | undefined>): ConversationCriteriaDto { return values.reduce<ConversationCriteriaDto>((current, next) => next ? { ...current, ...next, preferences: { ...(current.preferences ?? {}), ...(next.preferences ?? {}) } } : current, {}); }
+  private extractDeterministicCriteria(message: string, context?: AssistantContextDto): ConversationCriteriaDto { const budgetMax = this.extractBudget(message); const requestedComponent = this.detectComponentType(message, context); const resolution = /(?:1440p|2k|qhd)/i.test(message) ? '1440p' : /(?:2160p|4k)/i.test(message) ? '4k' : /1080p/i.test(message) ? '1080p' : undefined; const fps = this.normalize(message).match(/(\d{2,3})\s*(?:fps|hz)/)?.[1]; return { ...(budgetMax ? { budgetMax } : {}), ...(requestedComponent ? { requestedComponent } : {}), ...(resolution ? { resolution } : {}), ...(fps && Number(fps) >= 30 && Number(fps) <= 360 ? { targetFps: Number(fps) } : {}) }; }
+  private toRecommendationRequest(criteria: ConversationCriteriaDto): RecommendationRequestDto { if (!criteria.workloads?.length) throw new BadRequestException('Falta el uso principal para recomendar.'); const { requestedComponent: _requestedComponent, ...rest } = criteria; return { ...rest, workloads: criteria.workloads }; }
+  private builderConversationReplies(step?: string): QuickReplyDto[] { if (!step || step === 'DONE') return []; return [messageReply('builder-why', '¿Por qué esta?'), messageReply('builder-compare', '¿Qué diferencia hay?'), messageReply('builder-save', '¿Puedo ahorrar aquí?'), builderReply('builder-auto-select', 'Que Nova elija', 'AUTO_SELECT')]; }
+
+  private async withProductContext(message: string, context?: AssistantContextDto) { if (!context?.productSlug) return message; const product = await this.catalog.findBySlug(context.productSlug).catch(() => null); return product ? `Producto visible verificado: ${product.name}; tipo ${product.type}; precio ${product.price}; stock ${product.stock}.\nMensaje: ${message}` : message; }
+  private detectExplicitShoppingIntent(message: string): ShoppingIntent | undefined { const value = this.normalize(message); if (/(?:prefiero|quiero|mejor).*(?:pc|computador|equipo|uno).*(?:armad|listo|prearmad)|comprar\s+(?:un\s+)?(?:pc|computador|equipo)\s+listo/.test(value)) return ShoppingIntent.PREBUILT_PC; if (/mejorar|upgrade|actualizar\s+mi\s+(?:pc|computador|equipo)|tengo\s+(?:un\s+)?(?:ryzen|intel|rtx|gtx|rx)/.test(value)) return ShoppingIntent.UPGRADE_PC; if (/mejor\s+solo|buscar\s+(?:un\s+)?componente|(?:necesito|quiero)\s+(?:una\s+)?(?:gpu|grafica|cpu|procesador|ram|ssd|fuente)/.test(value)) return ShoppingIntent.COMPONENT; if (/armar(?:lo|la|me)?|armemos|por\s+(?:partes|componentes)|pieza\s+por\s+pieza|configuracion\s+personalizada/.test(value)) return ShoppingIntent.CUSTOM_PC; return undefined; }
+  private detectShoppingIntent(message: string): ShoppingIntent { const value = this.normalize(message); if (/mejor|upgrade|actualizar|tengo.*(?:ryzen|intel|rtx|gtx|rx)/.test(value)) return ShoppingIntent.UPGRADE_PC; if (/armar|personaliz|por partes|configur/.test(value)) return ShoppingIntent.CUSTOM_PC; if (/componente|gpu|tarjeta grafica|procesador|ram|ssd|fuente/.test(value)) return ShoppingIntent.COMPONENT; return ShoppingIntent.PREBUILT_PC; }
+  private detectComponentType(message: string, context?: AssistantContextDto): ProductType | undefined { const value = this.normalize(message); if (/gpu|grafica|video/.test(value)) return ProductType.GPU; if (/cpu|procesador/.test(value)) return ProductType.CPU; if (/ram|memoria/.test(value)) return ProductType.RAM; if (/ssd|disco|almacenamiento/.test(value)) return ProductType.STORAGE; if (/fuente|psu/.test(value)) return ProductType.PSU; if (/monitor/.test(value)) return ProductType.MONITOR; if (context?.selectedComponentType && Object.values(ProductType).includes(context.selectedComponentType as ProductType)) return context.selectedComponentType as ProductType; return undefined; }
+  private extractCurrentPc(message: string) { const normalized = this.normalize(message); const labeled = (label: string) => message.match(new RegExp(`(?:^|\\n)\\s*(?:${label})\\s*:\\s*([^\\n]+)`, 'i'))?.[1]?.trim(); const ram = labeled('RAM')?.match(/(\d+)/)?.[1] ?? normalized.match(/(\d+)\s*gb(?:\s*(?:de\s*)?(?:ram|memoria))?/)?.[1]; const psu = normalized.match(/(?:fuente|psu)[^\d]{0,20}(\d{3,4})\s*w/)?.[1]; return { cpu: labeled('CPU') ?? message.match(/(?:amd\s+)?ryzen\s+(?:[3579]\s+)?\d{4}\w*|intel(?:\(r\))?\s+(?:core\s+)?(?:i[3579][ -]?)?\d{4,5}\w*/i)?.[0]?.trim() ?? null, gpu: labeled('GPU') ?? message.match(/(?:nvidia\s+geforce\s+|geforce\s+)?(?:rtx|gtx)\s*\d{3,4}(?:\s*(?:ti|super))?|(?:amd\s+radeon\s+|radeon\s+)?rx\s*\d{3,4}(?:\s*xt)?/i)?.[0]?.trim() ?? null, ramGb: ram ? Number(ram) : null, motherboard: labeled('Motherboard|Board|Placa') ?? null, storage: labeled('Storage|Almacenamiento|Disco') ?? null, psuW: psu ? Number(psu) : null }; }
+  private extractUpgradeGoal(message: string) { const normalized = this.normalize(message); if (!/(jugar|fps|render|editar|blender|premiere|docker|virtual|multitarea|lento|tiron|espacio|1440|stream)/.test(normalized)) return undefined; return message.trim().slice(0, 160); }
+  private mergeCurrentPc(previous: AssistantContextDto['currentPc'], next: ReturnType<AssistantService['extractCurrentPc']>) { return { cpu: next.cpu ?? previous?.cpu ?? null, gpu: next.gpu ?? previous?.gpu ?? null, ramGb: next.ramGb ?? previous?.ramGb ?? null, motherboard: next.motherboard ?? previous?.motherboard ?? null, storage: next.storage ?? previous?.storage ?? null, psuW: next.psuW ?? previous?.psuW ?? null }; }
+  private extractBudget(message: string) { const million = this.normalize(message).match(/(\d+(?:[.,]\d+)?)\s*(?:millones?|m)\b/); if (million) return Math.round(Number(million[1].replace(',', '.')) * 1_000_000); const explicit = message.match(/(?:\$|cop\s*)?([\d.]{6,})/i)?.[1]; return explicit ? Number(explicit.replace(/[.,]/g, '')) : undefined; }
   private normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
 
-  private extractCurrentPc(message: string) {
-    const normalized = this.normalize(message);
-    const labeled = (label: string) => message.match(new RegExp(`(?:^|\\n)\\s*(?:${label})\\s*:\\s*([^\\n]+)`, 'i'))?.[1]?.trim();
-    const ram = labeled('RAM')?.match(/(\d+)/)?.[1] ?? normalized.match(/(\d+)\s*gb(?:\s*(?:de\s*)?(?:ram|memoria))/)?.[1];
-    const psu = normalized.match(/(?:fuente|psu)[^\d]{0,20}(\d{3,4})\s*w/)?.[1];
-    return {
-      cpu: labeled('CPU') ?? message.match(/(?:amd\s+)?ryzen\s+[^,\n.?]+|intel(?:\(r\))?\s+(?:core\s+)?[^,\n.?]+/i)?.[0]?.trim() ?? null,
-      gpu: labeled('GPU') ?? message.match(/(?:geforce\s+)?(?:rtx|gtx)\s*[^,\n.?]+|(?:radeon\s+)?rx\s*[^,\n.?]+/i)?.[0]?.trim() ?? null,
-      ramGb: ram ? Number(ram) : null,
-      motherboard: labeled('Motherboard|Board|Placa') ?? null,
-      storage: labeled('Storage|Almacenamiento|Disco') ?? null,
-      psuW: psu ? Number(psu) : null,
-    };
-  }
-
-  private extractUpgradeGoal(message: string) {
-    const normalized = this.normalize(message);
-    if (!/(jugar|fps|render|editar|edicion|blender|premiere|docker|virtual|multitarea|lento|tiron|espacio|almacenamiento|stream)/.test(normalized)) return undefined;
-    const match = message.match(/(?:quiero|para|busco|necesito)\s+([^?.!]+)/i);
-    return (match?.[1] ?? message).trim().slice(0, 160);
-  }
-
-  private mergeCurrentPc(previous: AssistantContextDto['currentPc'], next: ReturnType<AssistantService['extractCurrentPc']>) {
-    return {
-      cpu: next.cpu ?? previous?.cpu ?? null,
-      gpu: next.gpu ?? previous?.gpu ?? null,
-      ramGb: next.ramGb ?? previous?.ramGb ?? null,
-      motherboard: next.motherboard ?? previous?.motherboard ?? null,
-      storage: next.storage ?? previous?.storage ?? null,
-      psuW: next.psuW ?? previous?.psuW ?? null,
-    };
-  }
-
-  private extractBudget(message: string) {
-    const million = this.normalize(message).match(/(\d+(?:[.,]\d+)?)\s*(?:millones?|m)\b/);
-    if (million) return Math.round(Number(million[1].replace(',', '.')) * 1_000_000);
-    const explicit = message.match(/(?:\$|cop\s*)([\d.,]{6,})/i)?.[1];
-    return explicit ? Number(explicit.replace(/[.,]/g, '')) : undefined;
-  }
-
-  private isFinishRequest(message: string) { return /\b(hasta ahi|hasta ahí|eso es todo|ya|terminar|finalizar|no necesito mas|no necesito más|con eso)\b/i.test(this.normalize(message)); }
-
-  private productTypeLabel(type: ProductType) { return ({ CPU: 'el procesador', MOTHERBOARD: 'la motherboard', RAM: 'la memoria RAM', GPU: 'la tarjeta gráfica', STORAGE: 'el almacenamiento', PSU: 'la fuente', COOLING: 'la refrigeración', CASE: 'el chasis', MONITOR: 'el monitor', KEYBOARD: 'el teclado', MOUSE: 'el mouse', HEADSET: 'el headset' } as Partial<Record<ProductType, string>>)[type] ?? 'el siguiente componente'; }
-
-  async compare(input: CompareRequestDto) {
-    const result = await this.recommendations.recommend(input.filters);
-    const selected = result.recommendations.filter((item) =>
-      input.slugs.includes(item.product.slug),
-    );
-    if (selected.length < 2) {
-      throw new BadRequestException(
-        'Selecciona al menos dos recomendaciones vigentes para comparar',
-      );
-    }
-    const message = await this.ai.explainComparison(input.question, selected);
-    return { message, recommendations: selected };
-  }
+  async compare(input: CompareRequestDto) { const result = await this.recommendations.recommend(input.filters); const selected = result.recommendations.filter((item) => input.slugs.includes(item.product.slug)); if (selected.length < 2) throw new BadRequestException('Selecciona al menos dos recomendaciones vigentes para comparar'); return { message: await this.ai.explainComparison(input.question, selected), recommendations: selected }; }
 }

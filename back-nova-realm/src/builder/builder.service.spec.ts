@@ -1,5 +1,6 @@
 import { BuilderService } from './builder.service';
 import { Product, ProductType } from '../catalog/product.types';
+import { CompatibilityService } from './compatibility.service';
 
 function product(type: ProductType, slug: string, price: number, specs: Record<string, string | number | boolean> = {}): Product {
   return {
@@ -35,7 +36,7 @@ describe('BuilderService critical actions', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new BuilderService(catalog as never, database as never, workloads as never);
+    service = new BuilderService(catalog as never, database as never, workloads as never, new CompatibilityService());
   });
 
   it('AUTO_SELECT adds the selected product to the build', async () => {

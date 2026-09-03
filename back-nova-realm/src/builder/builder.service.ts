@@ -6,13 +6,20 @@ import { AutoBuildRequestDto, BuilderActionDto, BuilderRequestDto, ComponentReco
 import { WorkloadsService } from '../workloads/workloads.service';
 import { Workload } from '../workloads/workload.types';
 import { WorkloadPreferenceDto } from '../recommendations/recommendation.dto';
+import { CompatibilityIssue, CompatibilityService, CompatibilityStatus } from './compatibility.service';
 
 export type CompatibilitySeverity = 'INFO' | 'WARNING' | 'ERROR';
-export interface CompatibilityIssue {
-  code: string;
-  severity: CompatibilitySeverity;
-  message: string;
-}
+export type { CompatibilityIssue } from './compatibility.service';
+export type RecommendationRole = 'RECOMMENDED' | 'BEST_VALUE' | 'BUDGET' | 'PREMIUM';
+export type ComponentCandidate = Product & {
+  compatibility: CompatibilityStatus;
+  compatibilityReasons: string[];
+  recommendationScore: number;
+  budgetImpact: number;
+  recommendedRole?: RecommendationRole;
+  strengths: string[];
+  weaknesses: string[];
+};
 
 const COMPONENT_TYPES = [ProductType.CPU, ProductType.MOTHERBOARD, ProductType.RAM, ProductType.GPU, ProductType.STORAGE, ProductType.PSU, ProductType.COOLING, ProductType.CASE];
 const PERIPHERAL_TYPES = [ProductType.MONITOR, ProductType.KEYBOARD, ProductType.MOUSE, ProductType.HEADSET];
@@ -34,6 +41,7 @@ export class BuilderService {
     private readonly catalog: CatalogService,
     private readonly database: DatabaseService,
     private readonly workloads: WorkloadsService,
+    private readonly compatibility: CompatibilityService,
   ) {}
 
   async settings() {
@@ -60,13 +68,26 @@ export class BuilderService {
     const candidates = (await this.catalog.findAll({ type: input.componentType, inStock: true }))
       .filter((product) => !selectedSlugs.has(product.slug))
       .filter((product) => candidateBudget === undefined || product.price <= candidateBudget);
-    const compatible = candidates.filter((product) => this.isCompatible(product, selected)).sort((a, b) => {
+    const evaluated = candidates.map((product) => {
+      const result = this.compatibility.evaluate(product, selected);
+      return {
+        ...product,
+        ...result,
+        recommendationScore: Math.round(this.componentScore(product, input.componentType, workloadEntities)),
+        budgetImpact: remainingBudget === undefined ? product.price : Math.round((product.price / Math.max(remainingBudget, 1)) * 100),
+        strengths: this.candidateStrengths(product, input.componentType, selected, workloadEntities),
+        weaknesses: this.candidateWeaknesses(product, input.componentType, selected, workloadEntities),
+      } as ComponentCandidate;
+    });
+    const compatible = evaluated.filter((product) => product.compatibility === 'COMPATIBLE').sort((a, b) => {
       if (input.preference === 'cheaper') return a.price - b.price || this.componentScore(b, input.componentType, workloadEntities) - this.componentScore(a, input.componentType, workloadEntities);
       const scoreDifference = this.componentScore(b, input.componentType, workloadEntities) - this.componentScore(a, input.componentType, workloadEntities);
       const valueDifference = this.componentValueScore(b, input.componentType, workloadEntities) - this.componentValueScore(a, input.componentType, workloadEntities);
       return input.preference === 'powerful' ? scoreDifference || valueDifference : valueDifference || scoreDifference;
     });
-    return { componentType: input.componentType, recommendations: compatible.slice(0, 5), warnings: compatible.length ? [] : ['No encontré opciones disponibles que cumplan el presupuesto y la compatibilidad básica.'] };
+    const recommendations = this.assignRoles(compatible.slice(0, 5), input.preference);
+    const unknownCount = evaluated.filter((item) => item.compatibility === 'UNKNOWN').length;
+    return { componentType: input.componentType, recommendations, warnings: recommendations.length ? [] : [unknownCount ? 'Hay opciones sin datos técnicos suficientes; se excluyeron hasta poder comprobarlas.' : 'No encontré opciones disponibles que cumplan el presupuesto y la compatibilidad.'] };
   }
 
   async recommendPeripherals(budgetMax?: number, minimumRefreshHz?: number) {
@@ -82,11 +103,14 @@ export class BuilderService {
     const subtotal = products.reduce((total, product) => total + product.price, 0);
     const assemblySelected = input.assemblySelected ?? input.assembly ?? false;
     const assembly = assemblySelected && settings.assemblyEnabled ? settings.assemblyPrice : 0;
-    const compatibilityIssues = this.compatibilityIssues(components, input.complete ?? false);
+    const compatibilityIssues = this.compatibility.issues(components, input.complete ?? false);
+    compatibilityIssues.push(...await this.balanceWarnings(components, input.workloads, input.budgetMax, subtotal + assembly));
     const warnings = compatibilityIssues.map((issue) => issue.message);
     if (input.budgetMax && subtotal + assembly > input.budgetMax) warnings.push(`La configuración supera el presupuesto en ${subtotal + assembly - input.budgetMax} COP.`);
     const complete = COMPONENT_TYPES.every((type) => components.some((product) => product.type === type));
-    return { products, components, peripherals, subtotal, assembly, total: subtotal + assembly, budgetRemaining: input.budgetMax ? input.budgetMax - subtotal - assembly : null, assemblyEnabled: settings.assemblyEnabled, warnings, compatibilityIssues, complete, compatible: !compatibilityIssues.some((issue) => issue.severity === 'ERROR') };
+    const hasErrors = compatibilityIssues.some((issue) => issue.severity === 'ERROR');
+    const hasUnknown = compatibilityIssues.some((issue) => issue.severity === 'WARNING' && /^(CPU_SOCKET|RAM_TYPE|PSU_POWER|CASE_FORM_FACTOR|COOLING_)/.test(issue.code));
+    return { products, components, peripherals, subtotal, assembly, total: subtotal + assembly, budgetRemaining: input.budgetMax ? input.budgetMax - subtotal - assembly : null, assemblyEnabled: settings.assemblyEnabled, warnings, compatibilityIssues, compatibility: hasErrors ? 'INCOMPATIBLE' : hasUnknown ? 'UNKNOWN' : 'COMPATIBLE', complete, compatible: !hasErrors && !hasUnknown };
   }
 
   async autoBuild(input: AutoBuildRequestDto) {
@@ -124,7 +148,7 @@ export class BuilderService {
       const currentStep = (await this.flow(current, 'GUIDED')).currentStep;
       if (!GUIDED_STEPS.includes(currentStep as ProductType)) throw new BadRequestException('La configuración ya no tiene un componente pendiente.');
       const result = await this.recommendComponents({ componentType: currentStep as ProductType, itemSlugs: current, budgetMax: input.budgetMax, assemblySelected, workloads: input.workloads, preference: 'powerful' });
-      target = result.recommendations[0];
+      target = result.recommendations.find((item) => item.recommendedRole === 'RECOMMENDED') ?? result.recommendations[0];
       effectiveAction = 'ADD_TO_BUILD';
     }
     if (effectiveAction !== 'CLEAR_BUILD' && effectiveAction !== 'ADD_ASSEMBLY' && effectiveAction !== 'REMOVE_ASSEMBLY' && !target) throw new BadRequestException('No encontré el producto para actualizar la configuración.');
@@ -140,7 +164,7 @@ export class BuilderService {
     if (effectiveAction === 'REMOVE_FROM_BUILD' || effectiveAction === 'REMOVE_PERIPHERAL') slugs = target ? slugs.filter((slug) => slug !== target.slug) : slugs;
     const nextAssembly = effectiveAction === 'ADD_ASSEMBLY' ? true : effectiveAction === 'REMOVE_ASSEMBLY' ? false : assemblySelected;
     const summary = await this.summarize({ itemSlugs: slugs, budgetMax: input.budgetMax, assemblySelected: nextAssembly, workloads: input.workloads });
-    if (summary.compatibilityIssues.some((issue) => issue.severity === 'ERROR' && issue.code !== 'OUT_OF_STOCK')) {
+    if (summary.compatibilityIssues.some((issue) => issue.severity === 'ERROR' && !issue.code.startsWith('OUT_OF_STOCK'))) {
       throw new ConflictException('La pieza elegida no es compatible con la configuración actual.');
     }
     if (input.budgetMax !== undefined && summary.total > input.budgetMax) {
@@ -370,8 +394,7 @@ export class BuilderService {
   }
 
   private isCompatible(product: Product, selected: Product[]) {
-    const test = [...selected, product];
-    return this.compatibilityIssues(test).every((issue) => issue.severity !== 'ERROR');
+    return this.compatibility.evaluate(product, selected).compatibility === 'COMPATIBLE';
   }
 
   private scoreForType(product: Product, type: ProductType) {
@@ -416,23 +439,50 @@ export class BuilderService {
     return Math.min(100, Math.max(0, ((value ?? 0) / Math.max(recommended, 1)) * 100));
   }
 
-  private compatibilityIssues(products: Product[], requireComplete = false): CompatibilityIssue[] {
+  private compatibilityIssues(products: Product[], requireComplete = false): CompatibilityIssue[] { return this.compatibility.issues(products, requireComplete); }
+
+  private assignRoles(candidates: ComponentCandidate[], preference?: 'cheaper' | 'powerful') {
+    if (!candidates.length) return candidates;
+    const cheapest = [...candidates].sort((a, b) => a.price - b.price)[0];
+    const bestValue = [...candidates].sort((a, b) => this.componentValueScore(b, b.type, []) - this.componentValueScore(a, a.type, []))[0];
+    const recommended = preference === 'cheaper' ? cheapest : preference === 'powerful' ? candidates[0] : bestValue;
+    return candidates.map((candidate) => ({
+      ...candidate,
+      recommendedRole: candidate.slug === recommended.slug ? 'RECOMMENDED' as const : candidate.slug === cheapest.slug ? 'BUDGET' as const : candidate.slug === bestValue.slug ? 'BEST_VALUE' as const : undefined,
+    }));
+  }
+
+  private candidateStrengths(product: Product, type: ProductType, selected: Product[], workloads: Array<{ workload: Workload; importance: number }>) {
+    const strengths = this.compatibility.evaluate(product, selected).compatibilityReasons.slice(0, 2);
+    if (type === ProductType.RAM && (product.ramGb ?? 0) >= Math.max(32, ...workloads.map(({ workload }) => workload.recommendedRamGb))) strengths.push('Capacidad adecuada para multitarea exigente.');
+    if (type === ProductType.MOTHERBOARD && (product.upgradeabilityScore ?? 0) >= 70) strengths.push('Buen margen para mejoras futuras.');
+    return strengths.slice(0, 3);
+  }
+
+  private candidateWeaknesses(product: Product, type: ProductType, _selected: Product[], workloads: Array<{ workload: Workload; importance: number }>) {
+    const weaknesses: string[] = [];
+    if (type === ProductType.RAM && workloads.some(({ workload }) => (product.ramGb ?? 0) < workload.recommendedRamGb)) weaknesses.push('Queda por debajo de la memoria recomendada para uno de tus usos.');
+    if (type === ProductType.PSU && Number(product.technicalSpecs.wattage ?? 0) >= 1000) weaknesses.push('Puede ser más potencia de la necesaria para esta build.');
+    return weaknesses;
+  }
+
+  private async balanceWarnings(products: Product[], preferences?: WorkloadPreferenceDto[], budgetMax?: number, currentTotal = 0): Promise<CompatibilityIssue[]> {
     const issues: CompatibilityIssue[] = [];
     const cpu = products.find((item) => item.type === ProductType.CPU);
-    const board = products.find((item) => item.type === ProductType.MOTHERBOARD);
-    const ram = products.find((item) => item.type === ProductType.RAM);
     const gpu = products.find((item) => item.type === ProductType.GPU);
+    const ram = products.find((item) => item.type === ProductType.RAM);
     const psu = products.find((item) => item.type === ProductType.PSU);
-    if (cpu && board && cpu.technicalSpecs.socket && board.technicalSpecs.socket && cpu.technicalSpecs.socket !== board.technicalSpecs.socket) issues.push({ code: 'CPU_SOCKET', severity: 'ERROR', message: `CPU y motherboard no comparten socket (${cpu.technicalSpecs.socket} / ${board.technicalSpecs.socket}).` });
-    if (ram && board && ram.technicalSpecs.memoryType && board.technicalSpecs.memoryType && ram.technicalSpecs.memoryType !== board.technicalSpecs.memoryType) issues.push({ code: 'RAM_MEMORY_TYPE', severity: 'ERROR', message: `La RAM ${ram.technicalSpecs.memoryType} no es compatible con la motherboard ${board.technicalSpecs.memoryType}.` });
-    if (psu) {
-      const required = Number(cpu?.technicalSpecs.tdpW ?? 65) + Number(gpu?.technicalSpecs.tdpW ?? 160) + 150;
-      if (Number(psu.technicalSpecs.wattage ?? 0) < required) issues.push({ code: 'PSU_POWER', severity: 'ERROR', message: `La fuente necesita al menos ${required} W para estos componentes.` });
-    }
-    if (products.some((item) => item.stock <= 0 || !item.active)) issues.push({ code: 'OUT_OF_STOCK', severity: 'ERROR', message: 'Hay un producto sin stock o inactivo en la configuración.' });
-    if (requireComplete) {
-      for (const type of COMPONENT_TYPES) if (!products.some((item) => item.type === type)) issues.push({ code: `MISSING_${type}`, severity: 'ERROR', message: `Falta seleccionar ${type.toLowerCase()} para completar la build.` });
-    }
+    const cooling = products.find((item) => item.type === ProductType.COOLING);
+    const pcCase = products.find((item) => item.type === ProductType.CASE);
+    const workloads = await this.loadWorkloads(preferences);
+    const recommendedRam = Math.max(0, ...workloads.map(({ workload }) => workload.recommendedRamGb));
+    if (ram && recommendedRam && (ram.ramGb ?? 0) < recommendedRam) issues.push({ code: 'BALANCE_WARNING_RAM', severity: 'WARNING', message: `${ram.ramGb ?? 0} GB funcionan, pero tus usos recomiendan ${recommendedRam} GB para trabajar con margen.` });
+    if (cpu && gpu && (cpu.cpuScore ?? 0) - (gpu.gpuScore ?? 0) >= 12 && (budgetMax ?? 0) - currentTotal > 700000) issues.push({ code: 'BALANCE_WARNING_GPU', severity: 'WARNING', message: 'La gráfica queda bastante por detrás del procesador y todavía hay presupuesto; movería más inversión a la GPU.' });
+    const requiredPsu = gpu ? Number(gpu.technicalSpecs.recommendedPsuWatts ?? 0) : 0;
+    if (psu && requiredPsu && Number(psu.technicalSpecs.wattage ?? 0) >= requiredPsu + 350) issues.push({ code: 'BALANCE_WARNING_PSU', severity: 'WARNING', message: 'La fuente está muy sobredimensionada; puedes ahorrar sin perder el margen recomendado para la GPU.' });
+    if (cooling && cpu && cooling.price > cpu.price * 0.75 && (cpu.cpuScore ?? 0) < 85) issues.push({ code: 'BALANCE_WARNING_COOLING', severity: 'WARNING', message: 'La refrigeración consume demasiado presupuesto para este procesador; priorizaría rendimiento o memoria.' });
+    const missingPerformance = !gpu || !ram || !products.some((item) => item.type === ProductType.STORAGE);
+    if (pcCase && missingPerformance && pcCase.price >= 600000) issues.push({ code: 'BALANCE_WARNING_CASE', severity: 'WARNING', message: 'El chasis es costoso mientras faltan piezas de rendimiento; reservaría ese dinero para la build.' });
     return issues;
   }
 
