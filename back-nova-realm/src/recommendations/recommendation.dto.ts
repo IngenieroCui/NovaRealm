@@ -28,6 +28,22 @@ export class RecommendationPreferencesDto {
   @IsOptional()
   @IsBoolean()
   futureUpgrade?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  wifiRequired?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  peripheralsNeeded?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  valuePriority?: boolean;
+
+  @IsOptional()
+  @IsIn(['LIGHT', 'NORMAL', 'HEAVY'])
+  multitaskingLevel?: 'LIGHT' | 'NORMAL' | 'HEAVY';
 }
 
 export class RecommendationRequestDto {

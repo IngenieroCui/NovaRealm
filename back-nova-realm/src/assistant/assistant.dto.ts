@@ -17,6 +17,7 @@ import {
 } from 'class-validator';
 import { RecommendationRequestDto } from '../recommendations/recommendation.dto';
 import { BuilderActionDto } from '../builder/builder.dto';
+import { ProductType } from '../catalog/product.types';
 
 export enum ShoppingIntent {
   PREBUILT_PC = 'PREBUILT_PC',
@@ -24,6 +25,13 @@ export enum ShoppingIntent {
   UPGRADE_PC = 'UPGRADE_PC',
   COMPONENT = 'COMPONENT',
   PC_WITH_PERIPHERALS = 'PC_WITH_PERIPHERALS',
+}
+
+export enum UseProfile {
+  GAMING = 'GAMING',
+  CREATIVE = 'CREATIVE',
+  PROGRAMMING = 'PROGRAMMING',
+  OFFICE = 'OFFICE',
 }
 
 export enum ConversationStage {
@@ -39,8 +47,8 @@ export enum ConversationStage {
   COMPLETE = 'COMPLETE',
 }
 
-export type AwaitingField = 'INTENT' | 'USE' | 'BUDGET' | 'BUILDER_MODE' | 'COMPONENT_SELECTION' | null;
-export type QuickReplyKind = 'SET_INTENT' | 'SET_BUDGET' | 'SET_WORKLOAD' | 'SET_BUILDER_MODE' | 'BUILDER_ACTION' | 'SEND_MESSAGE';
+export type AwaitingField = 'INTENT' | 'USE' | 'CONNECTIVITY' | 'GAMING_TARGET' | 'DEVELOPMENT_LOAD' | 'BUDGET' | 'BUILDER_MODE' | 'COMPONENT_SELECTION' | 'PERIPHERALS' | null;
+export type QuickReplyKind = 'SET_INTENT' | 'SET_USE_PROFILE' | 'SET_BUDGET' | 'SET_WORKLOAD' | 'SET_CONNECTIVITY' | 'SET_GAMING_TARGET' | 'SET_DEVELOPMENT_LOAD' | 'SET_BUILDER_MODE' | 'SET_UPGRADE_GOAL' | 'SET_PERIPHERALS' | 'BUILDER_ACTION' | 'SEND_MESSAGE';
 
 export class ConversationWorkloadDto {
   @IsString() @MaxLength(120) slug!: string;
@@ -49,6 +57,17 @@ export class ConversationWorkloadDto {
 
 export class ConversationPreferencesDto {
   @IsOptional() @IsBoolean() futureUpgrade?: boolean;
+  @IsOptional() @IsBoolean() wifiRequired?: boolean;
+  @IsOptional() @IsBoolean() peripheralsNeeded?: boolean;
+  @IsOptional() @IsBoolean() valuePriority?: boolean;
+  @IsOptional() @IsIn(['LIGHT', 'NORMAL', 'HEAVY']) multitaskingLevel?: 'LIGHT' | 'NORMAL' | 'HEAVY';
+}
+
+export class DiscoveryFlagsDto {
+  @IsOptional() @IsBoolean() connectivityAsked?: boolean;
+  @IsOptional() @IsBoolean() gamingTargetAsked?: boolean;
+  @IsOptional() @IsBoolean() developmentLoadAsked?: boolean;
+  @IsOptional() @IsBoolean() peripheralsAsked?: boolean;
 }
 
 export class ConversationCriteriaDto {
@@ -57,14 +76,17 @@ export class ConversationCriteriaDto {
   @IsOptional() @IsIn(['1080p', '1440p', '4k']) resolution?: '1080p' | '1440p' | '4k';
   @IsOptional() @IsInt() @Min(30) @Max(360) targetFps?: number;
   @IsOptional() @IsArray() @ArrayMaxSize(8) @ValidateNested({ each: true }) @Type(() => ConversationWorkloadDto) workloads?: ConversationWorkloadDto[];
+  @IsOptional() @IsEnum(UseProfile) useProfile?: UseProfile;
   @IsOptional() @ValidateNested() @Type(() => ConversationPreferencesDto) preferences?: ConversationPreferencesDto;
+  @IsOptional() @ValidateNested() @Type(() => DiscoveryFlagsDto) discovery?: DiscoveryFlagsDto;
+  @IsOptional() @IsArray() @ArrayMaxSize(4) @IsIn(['MONITOR', 'KEYBOARD', 'MOUSE', 'HEADSET'], { each: true }) requestedPeripherals?: Array<'MONITOR' | 'KEYBOARD' | 'MOUSE' | 'HEADSET'>;
   @IsOptional() @IsIn(['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'STORAGE', 'PSU', 'COOLING', 'CASE', 'MONITOR']) requestedComponent?: string;
 }
 
 export class QuickReplyDto {
   @IsString() @MaxLength(80) id!: string;
   @IsString() @MaxLength(100) label!: string;
-  @IsIn(['SET_INTENT', 'SET_BUDGET', 'SET_WORKLOAD', 'SET_BUILDER_MODE', 'BUILDER_ACTION', 'SEND_MESSAGE']) kind!: QuickReplyKind;
+  @IsIn(['SET_INTENT', 'SET_USE_PROFILE', 'SET_BUDGET', 'SET_WORKLOAD', 'SET_CONNECTIVITY', 'SET_GAMING_TARGET', 'SET_DEVELOPMENT_LOAD', 'SET_BUILDER_MODE', 'SET_UPGRADE_GOAL', 'SET_PERIPHERALS', 'BUILDER_ACTION', 'SEND_MESSAGE']) kind!: QuickReplyKind;
   @IsOptional() value?: string | number;
   @IsOptional() payload?: Record<string, unknown>;
 }
@@ -98,6 +120,7 @@ export class AssistantContextDto {
   @IsOptional() @IsBoolean() assemblySelected?: boolean;
   @IsOptional() @ValidateNested() @Type(() => CurrentPcDto) currentPc?: CurrentPcDto;
   @IsOptional() @IsString() @MaxLength(160) upgradeGoal?: string;
+  @IsOptional() @IsEnum(ProductType) builderEditingStep?: ProductType;
   @IsOptional() @IsString() @MaxLength(120) lastRecommendedProductSlug?: string;
   @IsOptional() @IsArray() @ArrayMaxSize(3) @IsString({ each: true }) lastComparedProductSlugs?: string[];
   @IsOptional() @IsString() @MaxLength(160) lastBuilderAdviceTopic?: string;
@@ -134,6 +157,18 @@ export class ChatRequestDto {
   @IsOptional()
   @IsIn(Object.values(ShoppingIntent))
   shoppingIntent?: ShoppingIntent;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => AssistantContextDto)
+  context?: AssistantContextDto;
+}
+
+export class AssistantStartRequestDto {
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ConversationCriteriaDto)
+  criteria?: ConversationCriteriaDto;
 
   @IsOptional()
   @ValidateNested()

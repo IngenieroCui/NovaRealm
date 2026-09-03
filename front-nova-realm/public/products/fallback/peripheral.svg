@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-labelledby="title desc">
+  <title id="title">Periférico</title><desc id="desc">Ilustración genérica de un periférico.</desc>
+  <rect width="160" height="120" rx="16" fill="#18212f"/><rect x="28" y="26" width="104" height="59" rx="6" fill="#334155" stroke="#fbbf24" stroke-width="4"/><rect x="39" y="36" width="82" height="36" rx="3" fill="#0f172a" stroke="#93c5fd" stroke-width="3"/><path d="M51 48h58M51 57h43M51 66h29" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/><path d="M55 95h50" stroke="#cbd5e1" stroke-width="5" stroke-linecap="round"/>
+</svg>

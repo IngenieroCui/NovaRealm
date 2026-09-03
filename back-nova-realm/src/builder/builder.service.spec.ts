@@ -58,3 +58,102 @@ describe('BuilderService critical actions', () => {
     expect(result.summary.total).toBe(550000);
   });
 });
+
+describe('BuilderService recommendation correctness', () => {
+  const workload = (slug: string, type: string, recommendedRamGb: number) => ({
+    id: 1, slug, name: slug, type, description: slug,
+    cpuWeight: 0.3, gpuWeight: 0.2, ramWeight: 0.4, storageWeight: 0.05, vramWeight: 0.05,
+    minimumCpuScore: 20, recommendedCpuScore: 50, minimumGpuScore: 10, recommendedGpuScore: 25,
+    minimumRamGb: Math.min(8, recommendedRamGb), recommendedRamGb, minimumVramGb: 0, recommendedVramGb: 0,
+    createdAt: '', updatedAt: '',
+  });
+
+  const createService = (catalogProducts: Product[], catalogWorkloads: ReturnType<typeof workload>[] = []) => {
+    const catalog = {
+      findAll: jest.fn((query?: { type?: ProductType; types?: ProductType[] }) => Promise.resolve(catalogProducts.filter((item) => !query?.type || item.type === query.type).filter((item) => !query?.types || query.types.includes(item.type)))),
+      findBySlug: jest.fn((slug: string) => Promise.resolve(catalogProducts.find((item) => item.slug === slug))),
+      findBySlugs: jest.fn((slugs: string[]) => Promise.resolve(catalogProducts.filter((item) => slugs.includes(item.slug)))),
+    };
+    const database = { all: jest.fn().mockResolvedValue([{ key: 'assemblyEnabled', value: 'true' }, { key: 'assemblyPrice', value: '150000' }]), run: jest.fn() };
+    const workloads = { findBySlugs: jest.fn((slugs: string[]) => Promise.resolve(catalogWorkloads.filter((item) => slugs.includes(item.slug)))) };
+    return new BuilderService(catalog as never, database as never, workloads as never, new CompatibilityService());
+  };
+
+  it('office: 16 GB beats 64 GB for recommendation and value', async () => {
+    const ram16 = { ...product(ProductType.RAM, 'ram16', 189000, { memoryType: 'DDR4' }), ramGb: 16 };
+    const ram64 = { ...product(ProductType.RAM, 'ram64', 599000, { memoryType: 'DDR4' }), ramGb: 64 };
+    const office = workload('ofimatica-basica', 'PROFESSIONAL', 16);
+    const service = createService([ram16, ram64], [office]);
+    const result = await service.recommendComponents({ componentType: ProductType.RAM, itemSlugs: [], workloads: [{ slug: office.slug, importance: 1 }], preferences: { valuePriority: true } });
+    expect(result.recommendations[0].slug).toBe('ram16');
+    expect(result.recommendations.find((item) => item.slug === 'ram64')?.recommendedRole).not.toBe('BEST_VALUE');
+  });
+
+  it('Docker and virtual machines give useful higher RAM scores', async () => {
+    const ram32 = { ...product(ProductType.RAM, 'ram32', 339000, { memoryType: 'DDR4' }), ramGb: 32 };
+    const ram64 = { ...product(ProductType.RAM, 'ram64', 599000, { memoryType: 'DDR4' }), ramGb: 64 };
+    const office = workload('ofimatica-basica', 'PROFESSIONAL', 16);
+    const docker = workload('docker', 'DEVELOPMENT', 32);
+    const vm = workload('maquinas-virtuales', 'DEVELOPMENT', 64);
+    const service = createService([ram32, ram64], [office, docker, vm]);
+    const officeScore = (service as any).componentScore(ram32, ProductType.RAM, [{ workload: office, importance: 1 }]);
+    const dockerScore = (service as any).componentScore(ram32, ProductType.RAM, [{ workload: docker, importance: 1 }]);
+    const vmScore = (service as any).componentScore(ram64, ProductType.RAM, [{ workload: vm, importance: 1 }]);
+    expect(dockerScore).toBeGreaterThan(officeScore);
+    expect(vmScore).toBeGreaterThan(officeScore);
+  });
+
+  it('Wi-Fi requirement excludes non-Wi-Fi motherboards', async () => {
+    const cpu = { ...product(ProductType.CPU, 'cpu', 400000, { socket: 'AM4', integratedGraphics: true }) };
+    const wifi = product(ProductType.MOTHERBOARD, 'wifi-board', 500000, { socket: 'AM4', memoryType: 'DDR4', wifi: true });
+    const wired = product(ProductType.MOTHERBOARD, 'wired-board', 300000, { socket: 'AM4', memoryType: 'DDR4', wifi: false });
+    const service = createService([cpu, wifi, wired]);
+    const result = await service.recommendComponents({ componentType: ProductType.MOTHERBOARD, itemSlugs: ['cpu'], preferences: { wifiRequired: true } });
+    expect(result.recommendations.map((item) => item.slug)).toEqual(['wifi-board']);
+  });
+
+  it('ranks 550/650 W PSUs ahead of excessive power for an RX6600', async () => {
+    const gpu = product(ProductType.GPU, 'rx6600', 899000, { tdpW: 160, recommendedPsuWatts: 550 });
+    const psu550 = product(ProductType.PSU, 'psu550', 249000, { wattage: 550 });
+    const psu650 = product(ProductType.PSU, 'psu650', 299000, { wattage: 650 });
+    const psu1000 = product(ProductType.PSU, 'psu1000', 749000, { wattage: 1000 });
+    const service = createService([gpu, psu550, psu650, psu1000]);
+    const result = await service.recommendComponents({ componentType: ProductType.PSU, itemSlugs: ['rx6600'] });
+    expect(result.recommendations.slice(0, 2).map((item) => item.slug).sort()).toEqual(['psu550', 'psu650']);
+    expect(result.recommendations.find((item) => item.slug === 'psu1000')?.recommendedRole).not.toBe('RECOMMENDED');
+  });
+
+  it('omits GPU for office with an integrated-graphics CPU and keeps it for Blender', async () => {
+    const cpu = product(ProductType.CPU, 'igpu-cpu', 400000, { socket: 'AM4', integratedGraphics: true });
+    const office = workload('ofimatica-basica', 'PROFESSIONAL', 16);
+    const blender = workload('blender', 'CREATIVE', 32);
+    const service = createService([cpu], [office, blender]);
+    const officeSteps = await (service as any).resolveGuidedSteps([cpu], [{ slug: office.slug, importance: 1 }]);
+    const blenderSteps = await (service as any).resolveGuidedSteps([cpu], [{ slug: blender.slug, importance: 1 }]);
+    expect(officeSteps).not.toContain(ProductType.GPU);
+    expect(blenderSteps).toContain(ProductType.GPU);
+  });
+
+  it('GO_TO_STEP preserves the build and returns the requested editing step', async () => {
+    const cpu = product(ProductType.CPU, 'igpu-cpu', 400000, { socket: 'AM4', integratedGraphics: true });
+    const ram = { ...product(ProductType.RAM, 'ram16', 189000, { memoryType: 'DDR4' }), ramGb: 16 };
+    const office = workload('ofimatica-basica', 'PROFESSIONAL', 16);
+    const service = createService([cpu, ram], [office]);
+    const currentSlugs = ['igpu-cpu'];
+    const result = await service.applyAction({ action: 'GO_TO_STEP', currentSlugs, componentType: ProductType.RAM, workloads: [{ slug: office.slug, importance: 1 }] });
+    expect(currentSlugs).toEqual(['igpu-cpu']);
+    expect(result.summary.products.map((item) => item.slug)).toEqual(['igpu-cpu']);
+    expect(result.flow.currentStep).toBe(ProductType.RAM);
+    expect(result.flow.editingStep).toBe(ProductType.RAM);
+  });
+
+  it('rejects an incompatible replacement without deleting downstream products', async () => {
+    const oldCpu = product(ProductType.CPU, 'old-cpu', 400000, { socket: 'AM4' });
+    const newCpu = product(ProductType.CPU, 'new-cpu', 500000, { socket: 'AM5' });
+    const board = product(ProductType.MOTHERBOARD, 'board', 400000, { socket: 'AM4', memoryType: 'DDR4' });
+    const service = createService([oldCpu, newCpu, board]);
+    const currentSlugs = ['old-cpu', 'board'];
+    await expect(service.applyAction({ action: 'REPLACE_COMPONENT', currentSlugs, productSlug: 'new-cpu', budgetMax: 5000000 })).rejects.toThrow('compatible');
+    expect(currentSlugs).toEqual(['old-cpu', 'board']);
+  });
+});

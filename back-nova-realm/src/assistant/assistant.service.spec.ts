@@ -1,10 +1,11 @@
 import { AssistantService } from './assistant.service';
 import { ChatRequestDto, ShoppingIntent } from './assistant.dto';
+import { DiscoveryPolicyService } from './discovery-policy.service';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 
 describe('AssistantService conversational orchestration', () => {
-  const ai = { chatTurn: jest.fn(), explainRecommendations: jest.fn(), explainComparison: jest.fn(), answerWithVerifiedContext: jest.fn(), answerBuilderQuestion: jest.fn(), composeConversationReply: jest.fn() };
+  const ai = { chatTurn: jest.fn(), generateGreeting: jest.fn(), explainRecommendations: jest.fn(), explainComparison: jest.fn(), answerWithVerifiedContext: jest.fn(), answerBuilderQuestion: jest.fn(), composeConversationReply: jest.fn() };
   const workloads = { findAll: jest.fn().mockResolvedValue([{ slug: 'valorant' }, { slug: 'blender' }, { slug: 'programacion' }]) };
   const recommendations = { recommend: jest.fn() };
   const builder = { recommendComponents: jest.fn(), autoBuild: jest.fn(), applyAction: jest.fn(), summarize: jest.fn(), flow: jest.fn(), analyzeUpgrade: jest.fn() };
@@ -17,6 +18,7 @@ describe('AssistantService conversational orchestration', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     ai.chatTurn.mockResolvedValue(turn());
+    ai.generateGreeting.mockResolvedValue('Hola, soy Nova. ¿Qué equipo tienes en mente?');
     ai.answerWithVerifiedContext.mockResolvedValue('Explicación contextual de Nova');
     ai.answerBuilderQuestion.mockResolvedValue('Respuesta sobre la pieza sin avanzar.');
     ai.composeConversationReply.mockResolvedValue('Pregunta contextual de Nova.');
@@ -62,7 +64,7 @@ describe('AssistantService conversational orchestration', () => {
   });
 
   it('case 6: asks only for builder mode when custom criteria are complete', async () => {
-    ai.chatTurn.mockResolvedValue(turn({ shoppingIntent: ShoppingIntent.CUSTOM_PC, intentChanged: true, extracted: criteria }));
+    ai.chatTurn.mockResolvedValue(turn({ shoppingIntent: ShoppingIntent.CUSTOM_PC, intentChanged: true, extracted: { ...criteria, resolution: '1080p', targetFps: 144 } }));
     const response = await service.chat({ message: '6 millones, Docker, Visual Studio y Valorant. Quiero armarlo.' });
     expect(response.awaiting).toBe('BUILDER_MODE');
     expect(response.quickReplies.map((reply: { kind: string }) => reply.kind)).toEqual(['SET_BUILDER_MODE', 'SET_BUILDER_MODE']);
@@ -110,5 +112,58 @@ describe('AssistantService conversational orchestration', () => {
     const dto = plainToInstance(ChatRequestDto, { message: 'Guiarme paso a paso', criteria: { budgetMax: 7000000, workloads: [{ slug: 'blender', importance: 1 }] } }, { enableImplicitConversion: true });
     expect(await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).toHaveLength(0);
     expect(dto.criteria?.workloads).toEqual([{ slug: 'blender', importance: 1 }]);
+  });
+
+  it('starts discovery with intent quick replies when there is no product context', async () => {
+    const response = await service.start({});
+    expect(response.stage).toBe('DISCOVER_INTENT');
+    expect(response.awaiting).toBe('INTENT');
+    expect(response.quickReplies.every((reply: { kind: string }) => reply.kind === 'SET_INTENT')).toBe(true);
+    expect(ai.generateGreeting).toHaveBeenCalled();
+  });
+
+  it('passes a verified product to the contextual start greeting', async () => {
+    const product = { slug: 'pc-uno', name: 'PC Uno', price: 5_000_000, type: 'PREBUILT_PC', stock: 1 };
+    catalog.findBySlug.mockResolvedValue(product);
+    const response = await service.start({ context: { productSlug: 'pc-uno' } });
+    expect(ai.generateGreeting).toHaveBeenCalledWith(expect.objectContaining({ product }));
+    expect(response.product).toBe(product);
+    expect(response.awaiting).toBeNull();
+  });
+
+  it('applies structured discovery replies without replacing existing criteria', () => {
+    const previous = { workloads: [{ slug: 'programacion', importance: 1 }], budgetMax: 5_000_000 };
+    expect((service as any).applyQuickReply({ id: 'wifi', label: 'Solo uso Wi-Fi', kind: 'SET_CONNECTIVITY', value: 'WIFI_ONLY' }, previous).criteria.preferences.wifiRequired).toBe(true);
+    expect((service as any).applyQuickReply({ id: 'target', label: '1440p · 144 Hz', kind: 'SET_GAMING_TARGET', value: '1440P_144' }, previous).criteria).toMatchObject({ workloads: previous.workloads, budgetMax: 5_000_000, resolution: '1440p', targetFps: 144 });
+    expect((service as any).applyQuickReply({ id: 'docker', label: 'Docker y servicios locales', kind: 'SET_DEVELOPMENT_LOAD', value: 'DOCKER' }, previous).criteria).toMatchObject({ workloads: [{ slug: 'programacion', importance: 1 }, { slug: 'docker', importance: 1 }], preferences: { multitaskingLevel: 'HEAVY' } });
+  });
+});
+
+describe('DiscoveryPolicyService', () => {
+  const policy = new DiscoveryPolicyService();
+
+  it('asks connectivity for custom office use when Wi-Fi is unknown', () => {
+    expect(policy.next(ShoppingIntent.CUSTOM_PC, { workloads: [{ slug: 'ofimatica-basica', importance: 1 }] })).toMatchObject({ awaiting: 'CONNECTIVITY' });
+  });
+
+  it('asks budget after custom office connectivity is known', () => {
+    expect(policy.next(ShoppingIntent.CUSTOM_PC, { workloads: [{ slug: 'ofimatica-basica', importance: 1 }], preferences: { wifiRequired: true } })).toMatchObject({ awaiting: 'BUDGET' });
+  });
+
+  it('asks development load for programming without Docker or VMs', () => {
+    expect(policy.next(ShoppingIntent.CUSTOM_PC, { workloads: [{ slug: 'programacion', importance: 1 }], budgetMax: 5_000_000 })).toMatchObject({ awaiting: 'DEVELOPMENT_LOAD' });
+  });
+
+  it('does not ask development load when Docker is already known', () => {
+    expect(policy.next(ShoppingIntent.CUSTOM_PC, { workloads: [{ slug: 'programacion', importance: 0.5 }, { slug: 'docker', importance: 0.5 }], budgetMax: 5_000_000 })).not.toMatchObject({ awaiting: 'DEVELOPMENT_LOAD' });
+  });
+
+  it('asks gaming target only while resolution or FPS is missing', () => {
+    expect(policy.next(ShoppingIntent.CUSTOM_PC, { workloads: [{ slug: 'valorant', importance: 1 }], budgetMax: 5_000_000 })).toMatchObject({ awaiting: 'GAMING_TARGET' });
+    expect(policy.next(ShoppingIntent.CUSTOM_PC, { workloads: [{ slug: 'valorant', importance: 1 }], resolution: '1080p', targetFps: 144, budgetMax: 5_000_000 })).not.toMatchObject({ awaiting: 'GAMING_TARGET' });
+  });
+
+  it('asks intent when no shopping intent exists', () => {
+    expect(policy.next(undefined, {})).toMatchObject({ awaiting: 'INTENT', stage: 'DISCOVER_INTENT' });
   });
 });

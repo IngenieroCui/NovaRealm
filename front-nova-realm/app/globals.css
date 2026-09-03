@@ -3201,3 +3201,254 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .upgrade-panel .upgrade-check { margin: 0; padding: 9px 0 0; border-top: 1px solid #e1e8f5; color: #60759c; }
 
 @media (max-width: 520px) { .system-info-heading { align-items: flex-start; flex-direction: column; }.system-info-heading button { width: 100%; } }
+
+/* Nova component candidates: compact ecommerce cards that stay readable in the drawer. */
+.nova-page,
+.nova-chat,
+.chat-panel,
+.messages {
+  min-width: 0;
+}
+.component-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid #d7e1f8;
+  border-radius: 13px;
+  background: #fff;
+}
+.component-result-image {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+}
+.component-result-media {
+  width: 88px;
+  height: 88px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 88px;
+  overflow: hidden;
+  border-radius: 9px;
+  background: #f1f5fb;
+}
+.component-result-media img {
+  width: 88px;
+  height: 88px;
+  object-fit: contain;
+}
+.component-result-copy {
+  min-width: 0;
+}
+.component-role-badge {
+  display: inline-block;
+  margin: 0 5px 5px 0;
+  padding: 4px 7px;
+  color: #41634f;
+  border: 1px solid #cfe4d6;
+  border-radius: 999px;
+  background: #eff8f1;
+  font-size: 9px;
+  font-weight: 800;
+}
+.component-result .type-chip {
+  margin-bottom: 5px;
+}
+.component-result h3 {
+  margin: 2px 0 4px;
+  color: #203663;
+  font-size: 14px;
+  line-height: 1.25;
+}
+.component-description {
+  display: -webkit-box;
+  max-width: 620px;
+  margin: 0;
+  overflow: hidden;
+  color: #7082a4;
+  font-size: 11px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.component-rationale {
+  margin: 5px 0 0;
+  color: #586d91;
+  font-size: 10px;
+  font-style: italic;
+  line-height: 1.35;
+}
+.component-specs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.component-specs li {
+  padding: 4px 6px;
+  color: #536b8f;
+  border-radius: 5px;
+  background: #f3f6fb;
+  font-size: 9px;
+}
+.component-result-actions {
+  min-width: 185px;
+  display: grid;
+  justify-items: end;
+  gap: 9px;
+}
+.component-result-actions > strong {
+  color: #203663;
+  font-size: 16px;
+  white-space: nowrap;
+}
+.component-result-actions > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+.component-result-actions .whatsapp-buy-button-compact {
+  width: auto;
+  min-height: 36px;
+  padding-inline: 10px;
+  font-size: 10px;
+}
+.connection-error {
+  margin: 0 0 18px 41px;
+}
+.connection-error-card {
+  padding: 13px 15px;
+  border: 1px solid #efd2d2;
+  border-radius: 10px;
+  background: #fff7f7;
+  color: #8e3030;
+}
+.connection-error-card p {
+  margin: 5px 0 10px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.connection-error-card button {
+  min-height: 36px;
+  padding: 0 13px;
+  color: #8e3030;
+  border: 1px solid #e7bcbc;
+  border-radius: 7px;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 750;
+}
+.builder-progress-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.builder-progress-heading > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.builder-progress-heading span,
+.builder-progress-heading small {
+  color: #6a7ea6;
+  font-size: 11px;
+}
+.builder-progress-heading small {
+  color: #8a6c93;
+  font-size: 10px;
+}
+.builder-previous,
+.build-change {
+  min-height: 32px;
+  padding: 0 10px;
+  color: #52699a;
+  border: 1px solid #d2dcf2;
+  border-radius: 7px;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+.build-change {
+  min-height: 27px;
+  padding-inline: 7px;
+  color: #687da8;
+  border-color: transparent;
+  background: transparent;
+  text-decoration: underline;
+}
+.builder-previous:hover,
+.build-change:hover {
+  border-color: #9eb1df;
+  background: #f5f7fd;
+}
+.build-line .build-change {
+  flex: 0 0 auto;
+}
+.nova-chat-compact .chat-panel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+.nova-chat-compact .messages {
+  flex: 1 1 auto;
+}
+.nova-chat-compact .chat-composer {
+  flex: 0 0 auto;
+}
+@media (max-width: 760px) {
+  .component-result {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .component-result-media,
+  .component-result-media img {
+    width: 72px;
+    height: 72px;
+  }
+  .component-result-media {
+    flex-basis: 72px;
+  }
+  .component-result-actions {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .component-result-actions > div {
+    justify-content: flex-end;
+  }
+  .component-result-actions .button,
+  .component-result-actions .whatsapp-buy-button-compact {
+    min-height: 40px;
+  }
+  .connection-error {
+    margin-left: 0;
+  }
+  .builder-progress-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .builder-previous {
+    width: 100%;
+  }
+  .build-line {
+    flex-wrap: wrap;
+  }
+  .build-line strong {
+    min-width: 120px;
+  }
+  .build-line .build-change {
+    margin-left: auto;
+  }
+  .nova-chat-compact .chat-composer {
+    margin-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+}

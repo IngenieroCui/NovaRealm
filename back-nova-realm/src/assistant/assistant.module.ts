@@ -6,10 +6,11 @@ import { BuilderModule } from '../builder/builder.module';
 import { CatalogModule } from '../catalog/catalog.module';
 import { AssistantController } from './assistant.controller';
 import { AssistantService } from './assistant.service';
+import { DiscoveryPolicyService } from './discovery-policy.service';
 
 @Module({
   imports: [AiModule, RecommendationsModule, WorkloadsModule, BuilderModule, CatalogModule],
   controllers: [AssistantController],
-  providers: [AssistantService],
+  providers: [AssistantService, DiscoveryPolicyService],
 })
 export class AssistantModule {}

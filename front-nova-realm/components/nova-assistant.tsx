@@ -14,7 +14,7 @@ export function NovaDrawer() {
   const { open, closeNova, session } = useNova();
   return <aside className={`nova-drawer ${open ? "is-open" : ""}`} aria-hidden={!open} inert={!open ? true : undefined} role="dialog" aria-modal="true" aria-label="Chat con Nova">
     <div className="nova-drawer-header"><div><span className="mini-avatar" aria-hidden="true">N</span><div><strong>Nova</strong><small>Tu asesora tecnológica</small></div></div><button onClick={closeNova} aria-label="Cerrar Nova">×</button></div>
-    <NovaChat compact context={session} />
+    <NovaChat compact context={session} enabled={open} />
   </aside>;
 }
 

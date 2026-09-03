@@ -5,7 +5,7 @@ import { Workload } from '../workloads/workload.types';
 import { AiMessage, AiProvider } from './ai.provider';
 import { CloudflareAiProvider } from './cloudflare-ai.provider';
 import { OllamaAiProvider } from './ollama-ai.provider';
-import { AwaitingField, ConversationCriteriaDto, ConversationStage, ShoppingIntent } from '../assistant/assistant.dto';
+import { AssistantContextDto, AwaitingField, ConversationCriteriaDto, ConversationStage, ShoppingIntent, UseProfile } from '../assistant/assistant.dto';
 import type { ComponentCandidate } from '../builder/builder.service';
 import type { Product, ProductType } from '../catalog/product.types';
 
@@ -23,11 +23,38 @@ export interface ChatTurnResult {
   extracted: ConversationCriteriaDto;
   builderPreference?: 'GUIDED' | 'AUTO';
   missingFields: string[];
-  nextQuestionPurpose: 'INTENT' | 'USE' | 'BUDGET' | 'BUILDER_MODE' | 'COMPONENT_SELECTION' | null;
+  nextQuestionPurpose: AwaitingField;
   reply: string;
 }
 
-const NOVA_PERSONALITY = `Eres Nova, asesora tecnológica de NovaRealm. Conversas como una buena asesora humana de una tienda colombiana: escuchas antes de vender, haces preguntas fáciles de responder y explicas el porqué con palabras cotidianas. Eres cercana, honesta y concreta; si una compra no aporta una mejora clara, lo dices. Normalmente escribes 1 o 2 párrafos breves y 30-80 palabras. No interrogues ni hagas varias preguntas desconectadas a la vez. Reconoce primero lo útil que ya contó la persona y pregunta solo por el dato que más cambia la recomendación. Evita jerga sin explicarla, headings, introducciones de IA, paredes de texto y frases como "de acuerdo con tus necesidades", "he analizado", "basado en los criterios" o "a continuación". No repitas lo que ya muestran las cards: aporta criterio, compromisos y riesgos. Nunca inventes productos, precios, stock, compatibilidad, benchmarks, fitScore ni totales; usa solo datos verificados y no afirmes que una acción ocurrió si el sistema no la confirmó. No recomiendes siempre lo más caro.`;
+const NOVA_PERSONALITY = `Eres Nova, asesora tecnológica de NovaRealm.
+
+Hablas en español de forma cercana, humana y clara.
+Eres una persona que conoce hardware ayudando a otra persona a comprar,
+no un informe técnico ni un vendedor insistente.
+
+Primero responde lo que la persona realmente preguntó.
+
+Después, si ayuda, da una recomendación concreta.
+
+Relaciona tus explicaciones con lo que la persona ya te contó.
+
+Puedes decir: "Yo me quedaría con...", "Aquí ahorraría...", "En tu caso...",
+"Con lo que me contaste...", "Esta sí vale la diferencia..." y
+"No creo que necesites pagar de más por...".
+
+No uses repetidamente: "Recomiendo X porque", "De acuerdo con tus necesidades",
+"Basado en los criterios", "He analizado", "La economía es clave" ni
+"El producto recomendado es".
+
+No inventes clientes reales ni estadísticas, productos, precios, stock,
+compatibilidad, benchmarks, características o rendimiento. Los datos técnicos
+vienen del backend. Puedes decir "Para un uso como el tuyo...", pero no
+"Clientes como tú normalmente...".
+
+Normalmente responde en 25-90 palabras. Usa máximo dos párrafos cortos salvo
+que el usuario pida detalle. Las cards ya muestran nombre, precio y
+especificaciones; no repitas todo lo que aparece en ellas.`;
 
 const OFFICE_KEYWORDS =
   /\b(excel|word|powerpoint|office|ofimatica|hojas? de calculo|presentaciones?|tareas? basicas?)\b/i;
@@ -82,22 +109,37 @@ Devuelve únicamente JSON con esta forma:
   "shoppingIntent": "PREBUILT_PC|CUSTOM_PC|UPGRADE_PC|COMPONENT|PC_WITH_PERIPHERALS",
   "intentChanged": false,
   "intentConfidence": 0.9,
-  "extracted": {
+    "extracted": {
+    "useProfile": "GAMING|CREATIVE|PROGRAMMING|OFFICE",
     "budgetMax": 5000000,
     "budgetPreferred": 4500000,
     "resolution": "1080p|1440p|4k",
     "targetFps": 144,
     "workloads": [{ "slug": "valorant", "importance": 0.5 }],
-    "preferences": { "futureUpgrade": false },
+      "preferences": {
+        "futureUpgrade": false,
+        "wifiRequired": true,
+        "peripheralsNeeded": false,
+        "valuePriority": true,
+        "multitaskingLevel": "LIGHT|NORMAL|HEAVY"
+      },
     "requestedComponent": "GPU"
   },
   "builderPreference": "GUIDED|AUTO|null",
   "missingFields": ["BUDGET"],
-  "nextQuestionPurpose": "INTENT|USE|BUDGET|BUILDER_MODE|COMPONENT_SELECTION|null",
+  "nextQuestionPurpose": "INTENT|USE|CONNECTIVITY|GAMING_TARGET|DEVELOPMENT_LOAD|BUDGET|BUILDER_MODE|COMPONENT_SELECTION|PERIPHERALS|null",
   "reply": "respuesta breve y contextual de Nova"
 }
 
-"extracted" contiene SOLO datos aportados o corregidos por el último mensaje; no copies criterios previos. Usa solo slugs de la lista. Los importances deben ser mayores que 0 y sumar aproximadamente 1. Marca intentChanged solo si el turno actual expresa claramente una compra o cambio de flujo. Excel, Word y tareas básicas corresponden a ofimatica-basica; programacion requiere código, IDE o desarrollo. Usa los criterios previos para no volver a preguntar lo conocido. Si falta un dato imprescindible, pregunta solo por el que más cambia la decisión. Para un componente, requestedComponent es obligatorio antes de recomendar. reply debe sonar natural, reconocer lo ya dicho y tener normalmente 30-80 palabras. No inventes productos, precios ni compatibilidad. No agregues texto fuera del JSON.`;
+"extracted" contiene SOLO datos aportados o corregidos por el último mensaje; no copies criterios previos. Usa únicamente los campos mostrados, y guarda una preferencia solo si el usuario dio evidencia explícita suficiente: no deduzcas preferencias por el tipo de compra. Usa solo slugs de la lista. Los importances deben ser mayores que 0 y sumar aproximadamente 1. Marca intentChanged solo si el turno actual expresa claramente una compra o cambio de flujo. Excel, Word y tareas básicas corresponden a ofimatica-basica; programacion requiere código, IDE o desarrollo. Usa los criterios previos para no volver a preguntar lo conocido. Si falta un dato imprescindible, pregunta solo por el que más cambia la decisión. Para un componente, requestedComponent es obligatorio antes de recomendar.
+Usa useProfile solo para categorías amplias de uso.
+Ejemplos:
+"solo quiero jugar" → useProfile=GAMING
+"lo uso para editar video y Blender" → useProfile=CREATIVE
+"programación, código, Visual Studio" → useProfile=PROGRAMMING
+"Word, Excel, universidad, navegador" → useProfile=OFFICE
+Si el usuario nombra un workload específico real que exista en el catálogo proporcionado, extrae también ese slug real. Nunca uses "gaming" como slug de workload.
+reply debe sonar natural, reconocer lo ya dicho y tener normalmente 30-80 palabras. No inventes productos, precios ni compatibilidad. No agregues texto fuera del JSON.`;
 
     const recent = conversation.slice(-8).map((item) => ({
       role: item.role,
@@ -113,7 +155,36 @@ Devuelve únicamente JSON con esta forma:
       ],
       true,
     );
-    return this.applyExplicitOfficeTurn(message, this.validateChatTurn(this.parseJson(raw), workloads), workloads);
+    const turn = this.applyExplicitOfficeTurn(message, this.validateChatTurn(this.parseJson(raw), workloads), workloads);
+    return this.sanitizeExplicitPreferences(message, turn);
+  }
+
+  async generateGreeting(input: {
+    criteria: ConversationCriteriaDto;
+    context?: AssistantContextDto;
+    product?: Product;
+  }): Promise<string> {
+    const verifiedProduct = input.product
+      ? {
+          name: input.product.name,
+          slug: input.product.slug,
+          type: input.product.type,
+          priceCop: this.formatCop(input.product.price),
+          stock: input.product.stock,
+          cpu: input.product.cpu,
+          gpu: input.product.gpu,
+          ramGb: input.product.ramGb,
+          storageGb: input.product.storageGb,
+          features: input.product.features,
+        }
+      : undefined;
+    const raw = await this.call('assistant-start', [
+      { role: 'system', content: `${NOVA_PERSONALITY}\nEscribe un saludo breve y humano para iniciar la conversación. ${verifiedProduct ? 'El usuario está viendo el producto verificado del contexto; menciónalo solo si ayuda y no inventes nada.' : 'Invita a contar qué quiere comprar o mejorar.'} Devuelve solo el mensaje, sin JSON, listas ni botones.` },
+      { role: 'user', content: `Criterios conocidos: ${JSON.stringify(input.criteria)}\nContexto: ${JSON.stringify(input.context ?? {})}\nProducto verificado: ${JSON.stringify(verifiedProduct ?? null)}` },
+    ]);
+    const message = raw.trim();
+    if (!message || message.includes('₡')) throw new ServiceUnavailableException('Nova no pudo formular el saludo.');
+    return message.slice(0, 1000);
   }
 
   async explainRecommendations(
@@ -196,6 +267,8 @@ Devuelve únicamente JSON con esta forma:
     lastRecommendedProductSlug?: string;
     lastComparedProductSlugs?: string[];
     balanceWarnings?: string[];
+    preferences?: ConversationCriteriaDto['preferences'];
+    useProfile?: UseProfile;
   }) {
     const verified = {
       workload: context.workload,
@@ -207,6 +280,8 @@ Devuelve únicamente JSON con esta forma:
       lastRecommendedProductSlug: context.lastRecommendedProductSlug,
       lastComparedProductSlugs: context.lastComparedProductSlugs,
       balanceWarnings: context.balanceWarnings ?? [],
+      preferences: context.preferences,
+      useProfile: context.useProfile,
     };
     return this.call('builder-answer', [
       { role: 'system', content: `${NOVA_PERSONALITY}\nEstás acompañando un PC builder que NO debe avanzar por responder una pregunta. Responde la pregunta en 30-80 palabras y toma postura cuando los datos lo permitan. Usa exclusivamente el JSON verificado. El backend ya decidió compatibilidad y roles: jamás los recalcules ni contradigas. No repitas las cards. Si faltan datos, dilo claramente. Puedes usar markdown seguro.` },
@@ -268,7 +343,7 @@ nextQuestionPurpose debe ser exactamente "${expected}". reply debe tener 30-80 p
     if (!raw || typeof raw !== 'object') throw new ServiceUnavailableException('Nova no pudo estructurar la solicitud.');
     const data = raw as Record<string, unknown>;
     const extracted = this.validateCriteria(data.extracted, workloads);
-    const purpose = ['INTENT', 'USE', 'BUDGET', 'BUILDER_MODE', 'COMPONENT_SELECTION'].includes(String(data.nextQuestionPurpose))
+    const purpose = ['INTENT', 'USE', 'CONNECTIVITY', 'GAMING_TARGET', 'DEVELOPMENT_LOAD', 'BUDGET', 'BUILDER_MODE', 'COMPONENT_SELECTION', 'PERIPHERALS'].includes(String(data.nextQuestionPurpose))
       ? data.nextQuestionPurpose as ChatTurnResult['nextQuestionPurpose']
       : null;
     return {
@@ -301,19 +376,54 @@ nextQuestionPurpose debe ser exactamente "${expected}". reply debe tener 30-80 p
     const uses = Array.isArray(data.workloads) ? data.workloads.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object').map((item) => ({ slug: typeof item.slug === 'string' ? item.slug : '', importance: Number(item.importance) })).filter((item) => knownSlugs.has(item.slug) && item.importance > 0 && item.importance <= 1).slice(0, 8) : [];
     const number = (key: string, min: number, max = Number.MAX_SAFE_INTEGER) => Number.isFinite(Number(data[key])) && Number(data[key]) >= min && Number(data[key]) <= max ? Math.round(Number(data[key])) : undefined;
     const resolution = ['1080p', '1440p', '4k'].includes(String(data.resolution)) ? data.resolution as ConversationCriteriaDto['resolution'] : undefined;
+    const useProfile = ['GAMING', 'CREATIVE', 'PROGRAMMING', 'OFFICE'].includes(String(data.useProfile)) ? data.useProfile as UseProfile : undefined;
     return {
+      ...(useProfile ? { useProfile } : {}),
       ...(number('budgetMax', 500000) ? { budgetMax: number('budgetMax', 500000) } : {}),
       ...(number('budgetPreferred', 500000) ? { budgetPreferred: number('budgetPreferred', 500000) } : {}),
       ...(uses.length ? { workloads: uses } : {}),
       ...(resolution ? { resolution } : {}),
       ...(number('targetFps', 30, 360) ? { targetFps: number('targetFps', 30, 360) } : {}),
-      ...(data.preferences && typeof data.preferences === 'object' && typeof (data.preferences as Record<string, unknown>).futureUpgrade === 'boolean' ? { preferences: { futureUpgrade: (data.preferences as Record<string, unknown>).futureUpgrade as boolean } } : {}),
+      ...(this.validatePreferences(data.preferences)),
       ...(typeof data.requestedComponent === 'string' && ['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'STORAGE', 'PSU', 'COOLING', 'CASE', 'MONITOR'].includes(data.requestedComponent) ? { requestedComponent: data.requestedComponent } : {}),
     };
   }
 
+  private validatePreferences(raw: unknown): { preferences?: ConversationCriteriaDto['preferences'] } {
+    if (!raw || typeof raw !== 'object') return {};
+    const data = raw as Record<string, unknown>;
+    const preferences = {
+      ...(typeof data.futureUpgrade === 'boolean' ? { futureUpgrade: data.futureUpgrade } : {}),
+      ...(typeof data.wifiRequired === 'boolean' ? { wifiRequired: data.wifiRequired } : {}),
+      ...(typeof data.peripheralsNeeded === 'boolean' ? { peripheralsNeeded: data.peripheralsNeeded } : {}),
+      ...(typeof data.valuePriority === 'boolean' ? { valuePriority: data.valuePriority } : {}),
+      ...(['LIGHT', 'NORMAL', 'HEAVY'].includes(String(data.multitaskingLevel)) ? { multitaskingLevel: data.multitaskingLevel as 'LIGHT' | 'NORMAL' | 'HEAVY' } : {}),
+    };
+    return Object.keys(preferences).length ? { preferences } : {};
+  }
+
+  private sanitizeExplicitPreferences(message: string, turn: ChatTurnResult): ChatTurnResult {
+    if (!turn.extracted.preferences) return turn;
+    const normalized = message.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const raw = turn.extracted.preferences;
+    const explicit = {
+      ...(raw.futureUpgrade !== undefined && /(?:en el futuro|mas adelante|actualizable|ampliar|expandir|upgrade futuro)/.test(normalized) ? { futureUpgrade: raw.futureUpgrade } : {}),
+      ...(raw.wifiRequired !== undefined && /(?:wi[\s-]?fi|ethernet|cable|inalambric)/.test(normalized) ? { wifiRequired: raw.wifiRequired } : {}),
+      ...(raw.peripheralsNeeded !== undefined && /(?:periferic|teclado|mouse|raton|monitor|pantalla|audifonos|auriculares)/.test(normalized) ? { peripheralsNeeded: raw.peripheralsNeeded } : {}),
+      ...(raw.valuePriority !== undefined && /(?:relacion(?: calidad)? precio|calidad[\s-]+precio|econom|ahorr|no quiero gastar|gastar porque si|presupuesto|dinero)/.test(normalized) ? { valuePriority: raw.valuePriority } : {}),
+      ...(raw.multitaskingLevel !== undefined && /(?:basico|word|excel|codigo|program|ide|docker|servicios? locales?|maquinas? virtuales?|multitarea|varias? cosas?)/.test(normalized) ? { multitaskingLevel: raw.multitaskingLevel } : {}),
+    };
+    return { ...turn, extracted: { ...turn.extracted, ...(Object.keys(explicit).length ? { preferences: explicit } : { preferences: undefined }) } };
+  }
+
   private mergeCriteria(previous: ConversationCriteriaDto | undefined, extracted: ConversationCriteriaDto): ConversationCriteriaDto {
-    return { ...(previous ?? {}), ...extracted, preferences: { ...(previous?.preferences ?? {}), ...(extracted.preferences ?? {}) } };
+    return { ...(previous ?? {}), ...extracted, workloads: extracted.workloads ? this.mergeWorkloads(previous?.workloads, extracted.workloads) : previous?.workloads, preferences: { ...(previous?.preferences ?? {}), ...(extracted.preferences ?? {}) } };
+  }
+
+  private mergeWorkloads(previous: ConversationCriteriaDto['workloads'] = [], next: ConversationCriteriaDto['workloads'] = []) {
+    const merged = new Map((previous ?? []).map((item) => [item.slug, item]));
+    for (const item of next ?? []) merged.set(item.slug, item);
+    return [...merged.values()].slice(0, 8);
   }
 
   private formatCop(value: number) {

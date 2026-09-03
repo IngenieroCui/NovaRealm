@@ -16,16 +16,19 @@ export type PeripheralType = "MONITOR" | "KEYBOARD" | "MOUSE" | "HEADSET";
 export type ShoppingIntent = "PREBUILT_PC" | "CUSTOM_PC" | "UPGRADE_PC" | "COMPONENT" | "PC_WITH_PERIPHERALS";
 export type BuilderMode = "GUIDED" | "AUTO";
 export type ConversationStage = "DISCOVER_INTENT" | "DISCOVER_USE" | "DISCOVER_BUDGET" | "DISCOVER_DETAILS" | "RECOMMENDING" | "BUILDER_MODE" | "BUILDER" | "UPGRADE" | "COMPONENT" | "COMPLETE";
-export type AwaitingField = "INTENT" | "USE" | "BUDGET" | "BUILDER_MODE" | "COMPONENT_SELECTION" | null;
-export type QuickReplyKind = "SET_INTENT" | "SET_BUDGET" | "SET_WORKLOAD" | "SET_BUILDER_MODE" | "BUILDER_ACTION" | "SEND_MESSAGE";
+export type AwaitingField = "INTENT" | "USE" | "CONNECTIVITY" | "GAMING_TARGET" | "DEVELOPMENT_LOAD" | "BUDGET" | "BUILDER_MODE" | "COMPONENT_SELECTION" | "PERIPHERALS" | null;
+export type QuickReplyKind = "SET_INTENT" | "SET_USE_PROFILE" | "SET_BUDGET" | "SET_WORKLOAD" | "SET_CONNECTIVITY" | "SET_GAMING_TARGET" | "SET_DEVELOPMENT_LOAD" | "SET_BUILDER_MODE" | "SET_UPGRADE_GOAL" | "SET_PERIPHERALS" | "BUILDER_ACTION" | "SEND_MESSAGE";
+export type UseProfile = "GAMING" | "CREATIVE" | "PROGRAMMING" | "OFFICE";
 export interface QuickReply { id: string; label: string; kind: QuickReplyKind; value?: string | number; payload?: Record<string, unknown>; }
 export interface BuilderFlow {
   mode: BuilderMode;
   currentStep: ProductType | "PERIPHERALS" | "ASSEMBLY" | "DONE";
-  currentStepLabel: string;
-  completedSteps: ProductType[];
-  progress: number;
-  totalSteps: number;
+  currentStepLabel?: string;
+  previousStep?: ProductType | "PERIPHERALS" | "ASSEMBLY" | "DONE";
+  editingStep?: ProductType | "PERIPHERALS" | "ASSEMBLY" | "DONE";
+  completedSteps?: ProductType[];
+  progress?: number;
+  totalSteps?: number;
 }
 
 export interface Product {
@@ -76,14 +79,26 @@ export interface Workload {
 
 export interface RecommendationFilters {
   budgetMax?: number;
+  budget?: number;
   budgetPreferred?: number;
   resolution?: "1080p" | "1440p" | "4k";
   targetFps?: number;
   workloads?: Array<{ slug: string; importance: number }>;
-  preferences?: { futureUpgrade?: boolean };
+  preferences?: { futureUpgrade?: boolean; wifiRequired?: boolean; valuePriority?: boolean; multitaskingLevel?: "LIGHT" | "NORMAL" | "HEAVY" };
   requestedComponent?: ProductType;
+  useProfile?: UseProfile;
+  discovery?: { connectivityAsked?: boolean; gamingTargetAsked?: boolean; developmentLoadAsked?: boolean; peripheralsAsked?: boolean };
+  requestedPeripherals?: Array<"MONITOR" | "KEYBOARD" | "MOUSE" | "HEADSET">;
 }
-export type ConversationCriteria = RecommendationFilters;
+export interface ConversationCriteria extends RecommendationFilters {
+  intent?: ShoppingIntent | string;
+  budget?: number;
+  preferences?: RecommendationFilters["preferences"] & {
+    wifiRequired?: boolean;
+    valuePriority?: boolean;
+    multitaskingLevel?: "LIGHT" | "NORMAL" | "HEAVY";
+  };
+}
 
 export interface WorkloadScore {
   slug: string;
@@ -116,7 +131,7 @@ export interface ChatResponse {
   filters: RecommendationFilters | null;
   recommendations: Recommendation[];
   shoppingIntent?: ShoppingIntent;
-  componentRecommendations?: Product[];
+  componentRecommendations?: Array<ComponentCandidate | Product>;
   componentType?: string;
   currentPc?: CurrentPc;
   upgradeGoal?: string | null;
@@ -127,6 +142,7 @@ export interface ChatResponse {
   actions?: AssistantAction[];
   criteria?: ConversationCriteria;
   quickReplies?: QuickReply[];
+  quickActions?: string[];
   stage?: ConversationStage;
   awaiting?: AwaitingField;
   debug?: { aiUsed: boolean; operation: string; stage: ConversationStage };
@@ -137,16 +153,27 @@ export interface ChatResponse {
   lastComparedProductSlugs?: string[];
   lastBuilderAdviceTopic?: string;
   builderPreference?: "balanced" | "cheaper" | "powerful";
+  bundleSummary?: BundleSummary;
 }
 
-export interface ComponentCandidate extends Product {
-  compatibility: "COMPATIBLE" | "INCOMPATIBLE" | "UNKNOWN";
-  compatibilityReasons: string[];
-  recommendationScore: number;
-  budgetImpact: number;
+export interface CandidateRationale { reasons: string[]; tradeoffs: string[]; }
+export interface ComponentCandidate {
+  product: Product;
   recommendedRole?: "RECOMMENDED" | "BEST_VALUE" | "BUDGET" | "PREMIUM";
-  strengths: string[];
-  weaknesses: string[];
+  rationale?: CandidateRationale | string;
+  compatibility?: "COMPATIBLE" | "INCOMPATIBLE" | "UNKNOWN";
+  compatibilityReasons?: string[];
+  recommendationScore?: number;
+  budgetImpact?: number;
+  strengths?: string[];
+  weaknesses?: string[];
+}
+
+export interface BundleSummary {
+  totalBudget: number;
+  reservedForPeripherals: number;
+  pcBudget: number;
+  peripheralTotal: number;
 }
 
 export interface CurrentPc {

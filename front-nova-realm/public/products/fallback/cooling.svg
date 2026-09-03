@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-labelledby="title desc">
+  <title id="title">Refrigeración</title><desc id="desc">Ilustración genérica de un disipador.</desc>
+  <rect width="160" height="120" rx="16" fill="#172033"/><path d="M48 23v74M62 23v74M76 23v74M90 23v74M104 23v74" stroke="#93c5fd" stroke-width="7"/><path d="M37 31h78M37 45h78M37 59h78M37 73h78M37 87h78" stroke="#2563eb" stroke-width="4"/><circle cx="80" cy="60" r="25" fill="#1e3a8a" fill-opacity=".7" stroke="#bfdbfe" stroke-width="3"/><path d="M80 42v36M62 60h36" stroke="#dbeafe" stroke-width="3"/>
+</svg>

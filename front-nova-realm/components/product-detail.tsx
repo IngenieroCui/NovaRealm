@@ -34,7 +34,7 @@ export function ProductDetail({ slug }: { slug: string }) {
           <h1>{product.name}</h1><p className="detail-description">{product.description}</p>
           <div className="detail-price"><small>Precio</small><strong>{formatMoney(product.price)}</strong><span>IVA incluido · Envío calculado al comprar</span></div>
           {isPc && <div className="key-specs"><div><span>Procesador</span><strong>{product.cpu}</strong></div><div><span>Tarjeta gráfica</span><strong>{product.gpu}</strong></div><div><span>Memoria</span><strong>{product.ramGb} GB RAM</strong></div><div><span>Almacenamiento</span><strong>{product.storageGb} GB NVMe</strong></div></div>}
-          <WhatsAppBuyButton className="button button-full" productName={product.name} price={product.price} />
+          <WhatsAppBuyButton className="button button-full" productName={product.name} productType={product.type} price={product.price} />
           {product.type !== "PREBUILT_PC" && <Link className="button button-outline button-full" href={`/configurador?add=${encodeURIComponent(product.slug)}`}>Agregar al configurador</Link>}
           <Link className="button button-accent button-full" href={`/nova?q=${encodeURIComponent(`Estoy viendo ${product.name}. ¿Me sirve para mi uso?`)}`}><span>✦</span> Preguntarle a Nova sobre este producto</Link>
           <p className="safe-note">✓ Nova comparará este equipo con alternativas reales del catálogo.</p>

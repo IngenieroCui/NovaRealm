@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-labelledby="title desc">
+  <title id="title">Chasis</title><desc id="desc">Ilustración genérica de un chasis de computadora.</desc>
+  <rect width="160" height="120" rx="16" fill="#21152d"/><rect x="48" y="17" width="64" height="87" rx="7" fill="#3b1d59" stroke="#e879f9" stroke-width="4"/><rect x="61" y="29" width="38" height="42" rx="3" fill="#581c87" stroke="#f0abfc" stroke-width="3"/><circle cx="80" cy="50" r="10" fill="#d946ef"/><path d="M61 84h38M61 94h21" stroke="#f0abfc" stroke-width="4" stroke-linecap="round"/>
+</svg>

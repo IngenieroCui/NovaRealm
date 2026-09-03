@@ -78,4 +78,38 @@ describe('AiService', () => {
     });
     expect(result.filters?.budgetMax).toBeUndefined();
   });
+
+  it('valida todas las preferencias permitidas y descarta campos arbitrarios', () => {
+    const result = (service as any).validateCriteria({
+      preferences: {
+        futureUpgrade: true,
+        wifiRequired: false,
+        peripheralsNeeded: true,
+        valuePriority: true,
+        multitaskingLevel: 'HEAVY',
+        inferredPreference: true,
+      },
+    }, [officeWorkload]);
+    expect(result.preferences).toEqual({
+      futureUpgrade: true,
+      wifiRequired: false,
+      peripheralsNeeded: true,
+      valuePriority: true,
+      multitaskingLevel: 'HEAVY',
+    });
+  });
+
+  it('keeps preference extraction only when the last message has evidence', () => {
+    const turn = {
+      shoppingIntent: undefined,
+      intentChanged: false,
+      intentConfidence: 0,
+      extracted: { preferences: { wifiRequired: true, valuePriority: true, multitaskingLevel: 'HEAVY' } },
+      missingFields: [],
+      nextQuestionPurpose: null,
+      reply: 'Respuesta',
+    };
+    expect((service as any).sanitizeExplicitPreferences('Solo uso Wi-Fi y Docker; no quiero gastar porque sí.', turn).extracted.preferences).toEqual({ wifiRequired: true, valuePriority: true, multitaskingLevel: 'HEAVY' });
+    expect((service as any).sanitizeExplicitPreferences('Quiero un computador.', turn).extracted.preferences).toBeUndefined();
+  });
 });

@@ -81,6 +81,75 @@ const pc = (
   ],
 });
 
+const FALLBACK_IMAGE_BY_TYPE: Record<string, string> = {
+  CPU: '/products/fallback/cpu.svg',
+  GPU: '/products/fallback/gpu.svg',
+  RAM: '/products/fallback/ram.svg',
+  MOTHERBOARD: '/products/fallback/motherboard.svg',
+  STORAGE: '/products/fallback/storage.svg',
+  PSU: '/products/fallback/psu.svg',
+  COOLING: '/products/fallback/cooling.svg',
+  CASE: '/products/fallback/case.svg',
+  MONITOR: '/products/fallback/peripheral.svg',
+  KEYBOARD: '/products/fallback/peripheral.svg',
+  MOUSE: '/products/fallback/peripheral.svg',
+  HEADSET: '/products/fallback/peripheral.svg',
+};
+
+export function imageForProductType(type: string): string {
+  return (
+    FALLBACK_IMAGE_BY_TYPE[type.toUpperCase()] ??
+    '/products/fallback/peripheral.svg'
+  );
+}
+
+type ComponentSpecs = NonNullable<ProductSeed['technicalSpecs']>;
+
+function formatCapacity(capacityGb: number): string {
+  if (capacityGb >= 1000 && capacityGb % 1000 === 0)
+    return `${capacityGb / 1000} TB`;
+  return `${capacityGb} GB`;
+}
+
+export function descriptionForComponent(
+  name: string,
+  type: string,
+  specs: ComponentSpecs,
+): string {
+  if (type === 'CPU') {
+    const graphics =
+      specs.integratedGraphics === true ? ' Incluye gráficos integrados.' : '';
+    return `Procesador de ${specs.cores ?? 0} núcleos y ${specs.threads ?? 0} hilos para equipos de uso general.${graphics} Usa socket ${specs.socket ?? 'compatible'}.`;
+  }
+  if (type === 'MOTHERBOARD') {
+    const wifiText = specs.wifi === true ? ' con Wi-Fi integrado' : '';
+    return `Motherboard ${specs.socket ?? 'moderna'} para memoria ${specs.ramType ?? 'compatible'}${wifiText}, en formato ${specs.formFactor ?? 'estándar'} y preparada para actualizaciones futuras.`;
+  }
+  if (type === 'RAM') {
+    return `Memoria de ${specs.capacityGb ?? 0} GB ${specs.ramType ?? ''} a ${specs.speed ?? 0} MT/s para multitarea y uso diario.`;
+  }
+  if (type === 'GPU') {
+    return `Tarjeta gráfica con ${specs.vramGb ?? 0} GB de VRAM para gaming y cargas aceleradas por GPU.`;
+  }
+  if (type === 'STORAGE') {
+    const generation = specs.generation ? ` Gen${specs.generation}` : '';
+    return `SSD ${specs.interface ?? 'de almacenamiento'}${generation} de ${formatCapacity(Number(specs.capacityGb ?? 0))} para sistema, aplicaciones y archivos con acceso rápido.`;
+  }
+  if (type === 'PSU') {
+    return `Fuente de ${specs.wattage ?? 0} W con certificación ${specs.efficiency ?? '80+ Bronze'} para alimentar componentes con estabilidad.`;
+  }
+  if (type === 'COOLING') {
+    return `Refrigeración para procesadores de gama media con capacidad térmica de ${specs.maxTdpW ?? 0} W y montaje sencillo.`;
+  }
+  if (type === 'CASE') {
+    const formFactors = Array.isArray(specs.supportedFormFactors)
+      ? specs.supportedFormFactors.join(', ')
+      : 'configuraciones estándar';
+    return `Chasis con flujo de aire y soporte para formatos ${formFactors}, pensado para mantener un montaje ordenado y actualizable.`;
+  }
+  return `${name} es un componente seleccionado para ampliar una estación NovaRealm equilibrada y fácil de mantener.`;
+}
+
 const component = (
   name: string,
   slug: string,
@@ -95,50 +164,247 @@ const component = (
   price,
   stock,
   active: true,
-  imageUrl: '/products/component.svg',
-  description: `${name}. Producto para el catálogo administrable de NovaRealm.`,
+  imageUrl: imageForProductType(type),
+  description: descriptionForComponent(
+    name,
+    type,
+    specsForComponent(name, type),
+  ),
   cpu: type === 'CPU' ? name : undefined,
   gpu: type === 'GPU' ? name : undefined,
-  ramGb: type === 'RAM' ? Number(name.match(/(\d+)\s*GB/i)?.[1] ?? 0) : undefined,
-  storageGb: type === 'STORAGE' ? Number(name.match(/(\d+)\s*TB/i)?.[1] ?? 0) * 1000 || Number(name.match(/(\d+)\s*GB/i)?.[1] ?? 0) : undefined,
-  vramGb: type === 'GPU' ? Number(name.match(/(\d+)\s*GB/i)?.[1] ?? 0) : undefined,
+  ramGb:
+    type === 'RAM' ? Number(name.match(/(\d+)\s*GB/i)?.[1] ?? 0) : undefined,
+  storageGb:
+    type === 'STORAGE'
+      ? Number(name.match(/(\d+)\s*TB/i)?.[1] ?? 0) * 1000 ||
+        Number(name.match(/(\d+)\s*GB/i)?.[1] ?? 0)
+      : undefined,
+  vramGb:
+    type === 'GPU' ? Number(name.match(/(\d+)\s*GB/i)?.[1] ?? 0) : undefined,
   cpuScore: type === 'CPU' ? score : undefined,
   gpuScore: type === 'GPU' ? score : undefined,
   technicalSpecs: specsForComponent(name, type),
   features: ['Precio en COP', 'Stock administrable'],
 });
 
-function specsForComponent(name: string, type: string): Record<string, string | number | boolean | string[]> {
+function specsForComponent(
+  name: string,
+  type: string,
+): Record<string, string | number | boolean | string[]> {
   const normalized = name.toLowerCase();
   if (type === 'CPU') {
-    const socket = normalized.includes('7950') || normalized.includes('7800') || normalized.includes('ryzen 7 7') || normalized.includes('ryzen 5 7') ? 'AM5' : normalized.includes('ryzen') ? 'AM4' : 'LGA1700';
-    const cores = normalized.includes('7950') ? 16 : normalized.includes('7800') || normalized.includes('7700') ? 8 : normalized.includes('i5-14') ? 10 : normalized.includes('i5-12') || normalized.includes('ryzen 5') ? 6 : 4;
-    return { socket, cores, threads: cores * 2, tdpW: normalized.includes('7950') ? 170 : normalized.includes('7800') || normalized.includes('7700') ? 105 : 65, performanceTier: cores >= 12 ? 'enthusiast' : cores >= 8 ? 'high' : cores >= 6 ? 'mid' : 'entry' };
+    const socket =
+      normalized.includes('7950') ||
+      normalized.includes('7800') ||
+      normalized.includes('ryzen 7 7') ||
+      normalized.includes('ryzen 5 7')
+        ? 'AM5'
+        : normalized.includes('ryzen')
+          ? 'AM4'
+          : 'LGA1700';
+    const cores = normalized.includes('7950')
+      ? 16
+      : normalized.includes('7800') || normalized.includes('7700')
+        ? 8
+        : normalized.includes('i5-14')
+          ? 10
+          : normalized.includes('i5-12') || normalized.includes('ryzen 5')
+            ? 6
+            : 4;
+    const integratedGraphics =
+      normalized.includes('ryzen 5 5600g') ||
+      /^amd ryzen [579] [78]\d{3}/.test(normalized);
+    return {
+      socket,
+      cores,
+      threads: cores * 2,
+      integratedGraphics,
+      tdpW: normalized.includes('7950')
+        ? 170
+        : normalized.includes('7800') || normalized.includes('7700')
+          ? 105
+          : 65,
+      performanceTier:
+        cores >= 12
+          ? 'enthusiast'
+          : cores >= 8
+            ? 'high'
+            : cores >= 6
+              ? 'mid'
+              : 'entry',
+    };
   }
   if (type === 'GPU') {
-    const tdpW = normalized.includes('4080') ? 320 : normalized.includes('4070') || normalized.includes('7800') ? 250 : normalized.includes('7700') ? 245 : 160;
-    return { vramGb: Number(normalized.match(/(\d+)\s*gb/)?.[1] ?? 8), tdpW, recommendedPsuWatts: tdpW >= 300 ? 750 : tdpW >= 240 ? 650 : 550 };
+    const tdpW = normalized.includes('4080')
+      ? 320
+      : normalized.includes('4070') || normalized.includes('7800')
+        ? 250
+        : normalized.includes('7700')
+          ? 245
+          : 160;
+    return {
+      vramGb: Number(normalized.match(/(\d+)\s*gb/)?.[1] ?? 8),
+      tdpW,
+      recommendedPsuWatts: tdpW >= 300 ? 750 : tdpW >= 240 ? 650 : 550,
+    };
   }
-  if (type === 'RAM') return { ramType: normalized.includes('ddr5') ? 'DDR5' : 'DDR4', capacityGb: Number(normalized.match(/(\d+)\s*gb/)?.[1] ?? 16), speed: Number(normalized.match(/(\d{4})/)?.[1] ?? 3200) };
-  if (type === 'PSU') return { wattage: Number(normalized.match(/(\d+)\s*w/)?.[1] ?? 650), efficiency: normalized.includes('platinum') ? '80+ Platinum' : normalized.includes('gold') ? '80+ Gold' : '80+ Bronze' };
+  if (type === 'RAM')
+    return {
+      ramType: normalized.includes('ddr5') ? 'DDR5' : 'DDR4',
+      capacityGb: Number(normalized.match(/(\d+)\s*gb/)?.[1] ?? 16),
+      speed: Number(normalized.match(/(\d{4})/)?.[1] ?? 3200),
+    };
+  if (type === 'PSU')
+    return {
+      wattage: Number(normalized.match(/(\d+)\s*w/)?.[1] ?? 650),
+      efficiency: normalized.includes('platinum')
+        ? '80+ Platinum'
+        : normalized.includes('gold')
+          ? '80+ Gold'
+          : '80+ Bronze',
+    };
   if (type === 'MOTHERBOARD') {
-    const socket = normalized.includes('b650') || normalized.includes('x670') ? 'AM5' : normalized.includes('b760') || normalized.includes('z790') || normalized.includes('h610') ? 'LGA1700' : 'AM4';
-    return { socket, ramType: normalized.includes('b650') || normalized.includes('x670') || normalized.includes('b760') || normalized.includes('z790') ? 'DDR5' : 'DDR4', formFactor: normalized.includes('creator') ? 'ATX' : 'MATX' };
+    const socket =
+      normalized.includes('b650') || normalized.includes('x670')
+        ? 'AM5'
+        : normalized.includes('b760') ||
+            normalized.includes('z790') ||
+            normalized.includes('h610')
+          ? 'LGA1700'
+          : 'AM4';
+    return {
+      socket,
+      ramType:
+        normalized.includes('b650') ||
+        normalized.includes('x670') ||
+        normalized.includes('b760') ||
+        normalized.includes('z790')
+          ? 'DDR5'
+          : 'DDR4',
+      formFactor: normalized.includes('creator') ? 'ATX' : 'MATX',
+      wifi: normalized.includes('wi-fi') || normalized.includes('wifi'),
+    };
   }
-  if (type === 'COOLING') return { supportedSockets: ['AM4', 'AM5', 'LGA1700'], maxTdpW: normalized.includes('360') ? 280 : normalized.includes('240') ? 220 : normalized.includes('dual') ? 180 : normalized.includes('tower') ? 150 : 95 };
-  if (type === 'CASE') return { supportedFormFactors: normalized.includes('compact') ? ['MATX', 'ITX'] : ['ATX', 'MATX', 'ITX'] };
+  if (type === 'STORAGE') {
+    const capacityGb =
+      Number(normalized.match(/(\d+)\s*tb/)?.[1] ?? 0) * 1000 ||
+      Number(normalized.match(/(\d+)\s*gb/)?.[1] ?? 0);
+    return {
+      interface: normalized.includes('sata')
+        ? 'SATA'
+        : normalized.includes('nvme')
+          ? 'NVME'
+          : 'UNKNOWN',
+      ...(normalized.includes('gen4') ? { generation: 4 } : {}),
+      capacityGb,
+    };
+  }
+  if (type === 'COOLING') {
+    return {
+      supportedSockets: ['AM4', 'AM5', 'LGA1700'],
+      maxTdpW: normalized.includes('360')
+        ? 280
+        : normalized.includes('240')
+          ? 220
+          : normalized.includes('dual')
+            ? 180
+            : normalized.includes('tower')
+              ? 150
+              : 95,
+    };
+  }
+  if (type === 'CASE')
+    return normalized.includes('compact')
+      ? { supportedFormFactors: ['MATX', 'ITX'] }
+      : {};
   return {};
 }
 
-const peripheral = (name: string, slug: string, type: string, price: number, features: string[], technicalSpecs: Record<string, string | number | boolean | string[]>): ProductSeed => {
-  const monitorSpecs: Record<string, string | number | boolean> = type === 'MONITOR' ? {
-    sizeInches: Number(name.match(/(\d+)\s*(?:pulgadas|\")?/i)?.[1] ?? 24),
-    panelType: 'IPS',
-  } : {};
+function descriptionForPeripheral(
+  name: string,
+  type: string,
+  features: string[],
+  specs: Record<string, string | number | boolean | string[]>,
+): string {
+  const featureText = features.join(' ').toLowerCase();
+  if (type === 'MONITOR') {
+    return `Monitor de ${specs.sizeInches ?? 0} pulgadas con resolución ${specs.resolution ?? 'FHD'} y ${specs.refreshRate ?? specs.refreshHz ?? 60} Hz, pensado para trabajo y entretenimiento.`;
+  }
+  if (type === 'KEYBOARD') {
+    const mechanical =
+      specs.mechanical === true || featureText.includes('mecánico')
+        ? 'mecánico'
+        : 'de membrana';
+    const layout = specs.size ?? specs.layout ?? 'formato completo';
+    return `Teclado ${mechanical} de ${layout}, diseñado para escritura cómoda, atajos diarios y una estación de trabajo ordenada.`;
+  }
+  if (type === 'MOUSE') {
+    const wireless =
+      specs.wireless === true || featureText.includes('inalámbrico');
+    const weight = specs.weight ? ` de ${specs.weight} g` : '';
+    return `Mouse ${wireless ? 'inalámbrico' : 'cableado'}${weight} con sensor óptico para navegación precisa, productividad y sesiones de juego prolongadas.`;
+  }
+  if (type === 'HEADSET') {
+    const wireless =
+      specs.wireless === true || featureText.includes('inalámbrico');
+    const microphone =
+      specs.microphone === true || featureText.includes('micrófono');
+    return `Headset ${wireless ? 'inalámbrico' : 'cableado'} con ${microphone ? 'micrófono integrado' : 'audio inmersivo'}, cómodo para llamadas, juegos y contenido multimedia.`;
+  }
+  return `${name} complementa una estación NovaRealm con controles prácticos y una experiencia de uso cómoda.`;
+}
+
+const peripheral = (
+  name: string,
+  slug: string,
+  type: string,
+  price: number,
+  features: string[],
+  technicalSpecs: Record<string, string | number | boolean | string[]>,
+): ProductSeed => {
+  const monitorSpecs: Record<string, string | number | boolean> =
+    type === 'MONITOR'
+      ? {
+          sizeInches: Number(
+            name.match(/(\d+)\s*(?:pulgadas|\")?/i)?.[1] ?? 24,
+          ),
+          panelType: 'IPS',
+        }
+      : {};
+  const mergedSpecs = { ...monitorSpecs, ...technicalSpecs };
+  if (
+    type === 'MONITOR' &&
+    mergedSpecs.refreshRate === undefined &&
+    mergedSpecs.refreshHz !== undefined
+  ) {
+    mergedSpecs.refreshRate = mergedSpecs.refreshHz;
+  }
+  if (type === 'KEYBOARD' && mergedSpecs.mechanical === undefined) {
+    mergedSpecs.mechanical = features.some((feature) =>
+      /mecánico/i.test(feature),
+    );
+  }
+  if (type === 'MOUSE' && mergedSpecs.wireless === undefined) {
+    mergedSpecs.wireless = features.some((feature) =>
+      /inalámbrico/i.test(feature),
+    );
+  }
+  if (type === 'HEADSET' && mergedSpecs.microphone === undefined) {
+    mergedSpecs.microphone = features.some((feature) =>
+      /micrófono/i.test(feature),
+    );
+  }
   return {
-    name, slug, type, price, stock: 8, active: true, imageUrl: '/products/component.svg',
-    description: `${name}. Periférico demo para complementar tu estación NovaRealm.`, features,
-    technicalSpecs: { ...monitorSpecs, ...technicalSpecs },
+    name,
+    slug,
+    type,
+    price,
+    stock: 8,
+    active: true,
+    imageUrl: imageForProductType(type),
+    description: descriptionForPeripheral(name, type, features, mergedSpecs),
+    features,
+    technicalSpecs: mergedSpecs,
   };
 };
 
@@ -442,6 +708,7 @@ export const PRODUCT_SEEDS: ProductSeed[] = [
   ),
   component('AMD Ryzen 5 5500', 'amd-ryzen-5-5500', 'CPU', 419000, 18, 61),
   component('AMD Ryzen 5 5600', 'amd-ryzen-5-5600', 'CPU', 529000, 12, 66),
+  component('AMD Ryzen 5 5600G', 'amd-ryzen-5-5600g', 'CPU', 499000, 14, 64),
   component(
     'Intel Core i5-12400F',
     'intel-core-i5-12400f',
@@ -568,15 +835,45 @@ export const PRODUCT_SEEDS: ProductSeed[] = [
   component('Fuente 650 W 80+ Bronze', 'psu-650w-bronze', 'PSU', 299000, 16),
   component('Fuente 850 W 80+ Gold', 'psu-850w-gold', 'PSU', 579000, 8),
   component('Fuente 1000 W 80+ Gold', 'psu-1000w-gold', 'PSU', 749000, 5),
-  component('Fuente 1200 W 80+ Platinum', 'psu-1200w-platinum', 'PSU', 1099000, 3),
+  component(
+    'Fuente 1200 W 80+ Platinum',
+    'psu-1200w-platinum',
+    'PSU',
+    1099000,
+    3,
+  ),
   component('Fuente 450 W 80+ Bronze', 'psu-450w-bronze', 'PSU', 199000, 15),
   component('Fuente 750 W 80+ Bronze', 'psu-750w-bronze', 'PSU', 359000, 12),
   component('Board B650 Wi-Fi', 'board-b650-wifi', 'MOTHERBOARD', 749000, 8),
-  component('Board B550 DDR4 Wi-Fi', 'board-b550-ddr4-wifi', 'MOTHERBOARD', 599000, 8),
+  component(
+    'Board B550 DDR4 Wi-Fi',
+    'board-b550-ddr4-wifi',
+    'MOTHERBOARD',
+    599000,
+    8,
+  ),
   component('Board A520 DDR4', 'board-a520-ddr4', 'MOTHERBOARD', 399000, 12),
-  component('Board X670 DDR5 Wi-Fi', 'board-x670-ddr5-wifi', 'MOTHERBOARD', 1199000, 5),
-  component('Board B760 DDR5 Wi-Fi', 'board-b760-ddr5-wifi', 'MOTHERBOARD', 799000, 7),
-  component('Board Z790 DDR5 Creator', 'board-z790-ddr5-creator', 'MOTHERBOARD', 1399000, 4),
+  component(
+    'Board X670 DDR5 Wi-Fi',
+    'board-x670-ddr5-wifi',
+    'MOTHERBOARD',
+    1199000,
+    5,
+  ),
+  component(
+    'Board B760 DDR5 Wi-Fi',
+    'board-b760-ddr5-wifi',
+    'MOTHERBOARD',
+    799000,
+    7,
+  ),
+  component(
+    'Board Z790 DDR5 Creator',
+    'board-z790-ddr5-creator',
+    'MOTHERBOARD',
+    1399000,
+    4,
+  ),
   component('Board H610 DDR4', 'board-h610-ddr4', 'MOTHERBOARD', 369000, 10),
   component('Chasis Nova Airflow', 'case-nova-airflow', 'CASE', 329000, 10),
   component('Chasis Nova Compact', 'case-nova-compact', 'CASE', 279000, 9),
@@ -584,34 +881,225 @@ export const PRODUCT_SEEDS: ProductSeed[] = [
   component('Chasis Nova Mesh XL', 'case-nova-mesh-xl', 'CASE', 529000, 6),
   component('Chasis Nova Silent', 'case-nova-silent', 'CASE', 399000, 7),
   component('Chasis Nova Studio', 'case-nova-studio', 'CASE', 649000, 4),
-  component('Refrigeración Nova Tower', 'cooling-nova-tower', 'COOLING', 219000, 12),
-  component('Refrigeración Nova Basic', 'cooling-nova-basic', 'COOLING', 129000, 14),
-  component('Refrigeración Nova Dual Fan', 'cooling-nova-dual-fan', 'COOLING', 329000, 10),
-  component('Refrigeración Nova Liquid 240', 'cooling-nova-liquid-240', 'COOLING', 499000, 7),
-  component('Refrigeración Nova Liquid 360', 'cooling-nova-liquid-360', 'COOLING', 699000, 4),
-  peripheral('Monitor Nova 24 FHD 240 Hz', 'monitor-nova-24-240hz', 'MONITOR', 899000, ['24 pulgadas', '1080p', '240 Hz'], { refreshHz: 240, resolution: '1080p' }),
-  peripheral('Monitor Nova 27 QHD 165 Hz', 'monitor-nova-27-165hz', 'MONITOR', 1199000, ['27 pulgadas', '1440p', '165 Hz'], { refreshHz: 165, resolution: '1440p' }),
-  peripheral('Monitor Nova 27 4K Creator', 'monitor-nova-27-4k', 'MONITOR', 1699000, ['27 pulgadas', '4K', '60 Hz'], { refreshHz: 60, resolution: '4k' }),
-  peripheral('Monitor Nova 32 QHD 180 Hz', 'monitor-nova-32-180hz', 'MONITOR', 1499000, ['32 pulgadas', '1440p', '180 Hz'], { refreshHz: 180, resolution: '1440p' }),
-  peripheral('Monitor Nova 27 FHD 144 Hz', 'monitor-nova-27-144hz', 'MONITOR', 799000, ['27 pulgadas', '1080p', '144 Hz'], { refreshHz: 144, resolution: '1080p', panelType: 'IPS', sizeInches: 27 }),
-  peripheral('Monitor Nova 24 QHD 165 Hz', 'monitor-nova-24-qhd-165hz', 'MONITOR', 1099000, ['24 pulgadas', '1440p', '165 Hz'], { refreshHz: 165, resolution: '1440p', panelType: 'IPS', sizeInches: 24 }),
-  peripheral('Teclado Nova Mech 60', 'teclado-nova-mech-60', 'KEYBOARD', 249000, ['Mecánico', 'Formato 60%', 'RGB'], { layout: '60%' }),
-  peripheral('Teclado Nova Mech TKL', 'teclado-nova-mech-tkl', 'KEYBOARD', 329000, ['Mecánico', 'TKL', 'RGB'], { layout: 'TKL' }),
-  peripheral('Teclado Nova Office', 'teclado-nova-office', 'KEYBOARD', 129000, ['Membrana', 'Silencioso'], { layout: 'full' }),
-  peripheral('Teclado Nova Creator', 'teclado-nova-creator', 'KEYBOARD', 449000, ['Mecánico', 'Full size', 'USB-C'], { layout: 'full' }),
-  peripheral('Teclado Nova Mech 75', 'teclado-nova-mech-75', 'KEYBOARD', 369000, ['Mecánico', '75%', 'Switch lineal'], { layout: '75%', mechanical: true, switchType: 'lineal', size: '75%' }),
-  peripheral('Teclado Nova Silent TKL', 'teclado-nova-silent-tkl', 'KEYBOARD', 399000, ['Mecánico', 'TKL', 'Switch silencioso'], { layout: 'TKL', mechanical: true, switchType: 'silencioso', size: 'TKL' }),
-  peripheral('Mouse Nova Swift 8K', 'mouse-nova-swift-8k', 'MOUSE', 279000, ['8K polling', 'Sensor óptico', 'Ligero'], { dpi: 26000 }),
-  peripheral('Mouse Nova Aim', 'mouse-nova-aim', 'MOUSE', 189000, ['Sensor óptico', 'Ergonómico'], { dpi: 12000 }),
-  peripheral('Mouse Nova Office', 'mouse-nova-office', 'MOUSE', 79000, ['Inalámbrico', 'Silencioso'], { dpi: 2400 }),
-  peripheral('Mouse Nova Pro Wireless', 'mouse-nova-pro-wireless', 'MOUSE', 399000, ['Inalámbrico', 'Sensor óptico', 'RGB'], { dpi: 30000 }),
-  peripheral('Mouse Nova Feather', 'mouse-nova-feather', 'MOUSE', 299000, ['Inalámbrico', '62 gramos', 'Sensor óptico'], { wireless: true, weight: 62, sensorTier: 'alto' }),
-  peripheral('Mouse Nova Mini', 'mouse-nova-mini', 'MOUSE', 149000, ['Cableado', 'Ligero', 'Sensor óptico'], { wireless: false, weight: 58, sensorTier: 'medio' }),
-  peripheral('Headset Nova Arena', 'headset-nova-arena', 'HEADSET', 249000, ['7.1 virtual', 'Micrófono extraíble'], { wireless: false }),
-  peripheral('Headset Nova Air', 'headset-nova-air', 'HEADSET', 399000, ['Inalámbrico', 'Micrófono'], { wireless: true }),
-  peripheral('Headset Nova Studio', 'headset-nova-studio', 'HEADSET', 549000, ['Audio detallado', 'Micrófono'], { wireless: false }),
-  peripheral('Headset Nova Lite', 'headset-nova-lite', 'HEADSET', 159000, ['Estéreo', 'Micrófono flexible'], { wireless: false }),
-  peripheral('Headset Nova Pro Wireless', 'headset-nova-pro-wireless', 'HEADSET', 649000, ['Inalámbrico', 'Micrófono desmontable', '7.1'], { wireless: true, microphone: true }),
+  component(
+    'Refrigeración Nova Tower',
+    'cooling-nova-tower',
+    'COOLING',
+    219000,
+    12,
+  ),
+  component(
+    'Refrigeración Nova Basic',
+    'cooling-nova-basic',
+    'COOLING',
+    129000,
+    14,
+  ),
+  component(
+    'Refrigeración Nova Dual Fan',
+    'cooling-nova-dual-fan',
+    'COOLING',
+    329000,
+    10,
+  ),
+  component(
+    'Refrigeración Nova Liquid 240',
+    'cooling-nova-liquid-240',
+    'COOLING',
+    499000,
+    7,
+  ),
+  component(
+    'Refrigeración Nova Liquid 360',
+    'cooling-nova-liquid-360',
+    'COOLING',
+    699000,
+    4,
+  ),
+  peripheral(
+    'Monitor Nova 24 FHD 240 Hz',
+    'monitor-nova-24-240hz',
+    'MONITOR',
+    899000,
+    ['24 pulgadas', '1080p', '240 Hz'],
+    { refreshHz: 240, resolution: '1080p' },
+  ),
+  peripheral(
+    'Monitor Nova 27 QHD 165 Hz',
+    'monitor-nova-27-165hz',
+    'MONITOR',
+    1199000,
+    ['27 pulgadas', '1440p', '165 Hz'],
+    { refreshHz: 165, resolution: '1440p' },
+  ),
+  peripheral(
+    'Monitor Nova 27 4K Creator',
+    'monitor-nova-27-4k',
+    'MONITOR',
+    1699000,
+    ['27 pulgadas', '4K', '60 Hz'],
+    { refreshHz: 60, resolution: '4k' },
+  ),
+  peripheral(
+    'Monitor Nova 32 QHD 180 Hz',
+    'monitor-nova-32-180hz',
+    'MONITOR',
+    1499000,
+    ['32 pulgadas', '1440p', '180 Hz'],
+    { refreshHz: 180, resolution: '1440p' },
+  ),
+  peripheral(
+    'Monitor Nova 27 FHD 144 Hz',
+    'monitor-nova-27-144hz',
+    'MONITOR',
+    799000,
+    ['27 pulgadas', '1080p', '144 Hz'],
+    { refreshHz: 144, resolution: '1080p', panelType: 'IPS', sizeInches: 27 },
+  ),
+  peripheral(
+    'Monitor Nova 24 QHD 165 Hz',
+    'monitor-nova-24-qhd-165hz',
+    'MONITOR',
+    1099000,
+    ['24 pulgadas', '1440p', '165 Hz'],
+    { refreshHz: 165, resolution: '1440p', panelType: 'IPS', sizeInches: 24 },
+  ),
+  peripheral(
+    'Teclado Nova Mech 60',
+    'teclado-nova-mech-60',
+    'KEYBOARD',
+    249000,
+    ['Mecánico', 'Formato 60%', 'RGB'],
+    { layout: '60%' },
+  ),
+  peripheral(
+    'Teclado Nova Mech TKL',
+    'teclado-nova-mech-tkl',
+    'KEYBOARD',
+    329000,
+    ['Mecánico', 'TKL', 'RGB'],
+    { layout: 'TKL' },
+  ),
+  peripheral(
+    'Teclado Nova Office',
+    'teclado-nova-office',
+    'KEYBOARD',
+    129000,
+    ['Membrana', 'Silencioso'],
+    { layout: 'full' },
+  ),
+  peripheral(
+    'Teclado Nova Creator',
+    'teclado-nova-creator',
+    'KEYBOARD',
+    449000,
+    ['Mecánico', 'Full size', 'USB-C'],
+    { layout: 'full' },
+  ),
+  peripheral(
+    'Teclado Nova Mech 75',
+    'teclado-nova-mech-75',
+    'KEYBOARD',
+    369000,
+    ['Mecánico', '75%', 'Switch lineal'],
+    { layout: '75%', mechanical: true, switchType: 'lineal', size: '75%' },
+  ),
+  peripheral(
+    'Teclado Nova Silent TKL',
+    'teclado-nova-silent-tkl',
+    'KEYBOARD',
+    399000,
+    ['Mecánico', 'TKL', 'Switch silencioso'],
+    { layout: 'TKL', mechanical: true, switchType: 'silencioso', size: 'TKL' },
+  ),
+  peripheral(
+    'Mouse Nova Swift 8K',
+    'mouse-nova-swift-8k',
+    'MOUSE',
+    279000,
+    ['8K polling', 'Sensor óptico', 'Ligero'],
+    { dpi: 26000 },
+  ),
+  peripheral(
+    'Mouse Nova Aim',
+    'mouse-nova-aim',
+    'MOUSE',
+    189000,
+    ['Sensor óptico', 'Ergonómico'],
+    { dpi: 12000 },
+  ),
+  peripheral(
+    'Mouse Nova Office',
+    'mouse-nova-office',
+    'MOUSE',
+    79000,
+    ['Inalámbrico', 'Silencioso'],
+    { dpi: 2400 },
+  ),
+  peripheral(
+    'Mouse Nova Pro Wireless',
+    'mouse-nova-pro-wireless',
+    'MOUSE',
+    399000,
+    ['Inalámbrico', 'Sensor óptico', 'RGB'],
+    { dpi: 30000 },
+  ),
+  peripheral(
+    'Mouse Nova Feather',
+    'mouse-nova-feather',
+    'MOUSE',
+    299000,
+    ['Inalámbrico', '62 gramos', 'Sensor óptico'],
+    { wireless: true, weight: 62, sensorTier: 'alto' },
+  ),
+  peripheral(
+    'Mouse Nova Mini',
+    'mouse-nova-mini',
+    'MOUSE',
+    149000,
+    ['Cableado', 'Ligero', 'Sensor óptico'],
+    { wireless: false, weight: 58, sensorTier: 'medio' },
+  ),
+  peripheral(
+    'Headset Nova Arena',
+    'headset-nova-arena',
+    'HEADSET',
+    249000,
+    ['7.1 virtual', 'Micrófono extraíble'],
+    { wireless: false },
+  ),
+  peripheral(
+    'Headset Nova Air',
+    'headset-nova-air',
+    'HEADSET',
+    399000,
+    ['Inalámbrico', 'Micrófono'],
+    { wireless: true },
+  ),
+  peripheral(
+    'Headset Nova Studio',
+    'headset-nova-studio',
+    'HEADSET',
+    549000,
+    ['Audio detallado', 'Micrófono'],
+    { wireless: false },
+  ),
+  peripheral(
+    'Headset Nova Lite',
+    'headset-nova-lite',
+    'HEADSET',
+    159000,
+    ['Estéreo', 'Micrófono flexible'],
+    { wireless: false },
+  ),
+  peripheral(
+    'Headset Nova Pro Wireless',
+    'headset-nova-pro-wireless',
+    'HEADSET',
+    649000,
+    ['Inalámbrico', 'Micrófono desmontable', '7.1'],
+    { wireless: true, microphone: true },
+  ),
 ];
 
 const wl = (

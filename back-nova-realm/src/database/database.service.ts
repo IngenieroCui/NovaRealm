@@ -1,7 +1,13 @@
 import { createClient, type Client, type InValue } from '@libsql/client';
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { resolve } from 'node:path';
-import { PRODUCT_SEEDS, WORKLOAD_SEEDS } from './seed-data';
+import {
+  imageForProductType,
+  PRODUCT_SEEDS,
+  WORKLOAD_SEEDS,
+} from './seed-data';
+
+const CURRENT_SEED_PROFILE_VERSION = 2;
 
 export interface RunResult {
   lastInsertRowid?: bigint;
@@ -109,9 +115,14 @@ export class DatabaseService implements OnModuleInit {
         value TEXT NOT NULL
       );
     `);
-    const columns = await this.database.execute({ sql: 'PRAGMA table_info(products)', args: [] });
+    const columns = await this.database.execute({
+      sql: 'PRAGMA table_info(products)',
+      args: [],
+    });
     if (!columns.rows.some((row) => String(row.name) === 'technicalSpecs')) {
-      await this.database.execute("ALTER TABLE products ADD COLUMN technicalSpecs TEXT NOT NULL DEFAULT '{}'" );
+      await this.database.execute(
+        "ALTER TABLE products ADD COLUMN technicalSpecs TEXT NOT NULL DEFAULT '{}'",
+      );
     }
   }
 
@@ -119,6 +130,11 @@ export class DatabaseService implements OnModuleInit {
     const productCount = await this.get<{ count: number }>(
       'SELECT COUNT(*) AS count FROM products',
     );
+    const seedProfileVersion = await this.get<{ value: string }>(
+      'SELECT value FROM store_settings WHERE key = ?',
+      'seed_profile_version',
+    );
+    const needsProfileSync = Number(seedProfileVersion?.value ?? 0) < CURRENT_SEED_PROFILE_VERSION;
     if (!productCount?.count) {
       for (const product of PRODUCT_SEEDS) {
         await this.run(
@@ -147,10 +163,7 @@ export class DatabaseService implements OnModuleInit {
           JSON.stringify(product.features ?? []),
           JSON.stringify(product.technicalSpecs ?? {}),
         );
-        if (product.technicalSpecs && Object.keys(product.technicalSpecs).length) {
-          await this.run("UPDATE products SET technicalSpecs = ? WHERE slug = ? AND (technicalSpecs IS NULL OR technicalSpecs = '{}' OR technicalSpecs = '')", JSON.stringify(product.technicalSpecs), product.slug);
-        }
-        await this.syncSeedProfile(product);
+        if (needsProfileSync) await this.syncSeedProfile(product);
       }
     }
 
@@ -163,18 +176,27 @@ export class DatabaseService implements OnModuleInit {
             cpu, gpu, ramGb, storageGb, vramGb, cpuScore, gpuScore,
             productivityScore, upgradeabilityScore, features, technicalSpecs
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          product.name, product.slug, product.description, product.price,
-          product.stock, product.imageUrl, product.active ? 1 : 0, product.type,
-          product.cpu ?? null, product.gpu ?? null, product.ramGb ?? null,
-          product.storageGb ?? null, product.vramGb ?? null, product.cpuScore ?? null,
-          product.gpuScore ?? null, product.productivityScore ?? null,
-          product.upgradeabilityScore ?? null, JSON.stringify(product.features ?? []),
+          product.name,
+          product.slug,
+          product.description,
+          product.price,
+          product.stock,
+          product.imageUrl,
+          product.active ? 1 : 0,
+          product.type,
+          product.cpu ?? null,
+          product.gpu ?? null,
+          product.ramGb ?? null,
+          product.storageGb ?? null,
+          product.vramGb ?? null,
+          product.cpuScore ?? null,
+          product.gpuScore ?? null,
+          product.productivityScore ?? null,
+          product.upgradeabilityScore ?? null,
+          JSON.stringify(product.features ?? []),
           JSON.stringify(product.technicalSpecs ?? {}),
         );
-        if (product.technicalSpecs && Object.keys(product.technicalSpecs).length) {
-          await this.run("UPDATE products SET technicalSpecs = ? WHERE slug = ? AND (technicalSpecs IS NULL OR technicalSpecs = '{}' OR technicalSpecs = '')", JSON.stringify(product.technicalSpecs), product.slug);
-        }
-        await this.syncSeedProfile(product);
+        if (needsProfileSync) await this.syncSeedProfile(product);
       }
     }
 
@@ -209,19 +231,88 @@ export class DatabaseService implements OnModuleInit {
         workload.recommendedVramGb,
       );
     }
+    if (needsProfileSync) {
+      await this.run(
+        `INSERT OR REPLACE INTO store_settings (key, value) VALUES (?, ?)`,
+        'seed_profile_version',
+        String(CURRENT_SEED_PROFILE_VERSION),
+      );
+    }
   }
 
   private async syncSeedProfile(product: (typeof PRODUCT_SEEDS)[number]) {
     if (product.type === 'PREBUILT_PC') return;
-    await this.run(
-      `UPDATE products SET cpu = COALESCE(cpu, ?), gpu = COALESCE(gpu, ?), ramGb = COALESCE(ramGb, ?), storageGb = COALESCE(storageGb, ?), vramGb = COALESCE(vramGb, ?), technicalSpecs = ? WHERE slug = ?`,
+    const existing = await this.get<{
+      description: string;
+      imageUrl: string;
+      technicalSpecs: string | Record<string, unknown> | null;
+    }>(
+      'SELECT description, imageUrl, technicalSpecs FROM products WHERE slug = ?',
+      product.slug,
+    );
+    if (!existing) return;
+
+    let existingTechnicalSpecs: Record<string, unknown> = {};
+    try {
+      const parsed =
+        typeof existing.technicalSpecs === 'string'
+          ? (JSON.parse(existing.technicalSpecs || '{}') as unknown)
+          : existing.technicalSpecs;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        existingTechnicalSpecs = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // A malformed legacy value must not prevent the rest of the seed profile from syncing.
+    }
+
+    const mergedTechnicalSpecs = {
+      ...(product.technicalSpecs ?? {}),
+      ...existingTechnicalSpecs,
+    };
+    const updates = [
+      'cpu = COALESCE(cpu, ?)',
+      'gpu = COALESCE(gpu, ?)',
+      'ramGb = COALESCE(ramGb, ?)',
+      'storageGb = COALESCE(storageGb, ?)',
+      'vramGb = COALESCE(vramGb, ?)',
+      'technicalSpecs = ?',
+    ];
+    const params: InValue[] = [
       product.cpu ?? null,
       product.gpu ?? null,
       product.ramGb ?? null,
       product.storageGb ?? null,
       product.vramGb ?? null,
-      JSON.stringify(product.technicalSpecs ?? {}),
-      product.slug,
+      JSON.stringify(mergedTechnicalSpecs),
+    ];
+
+    const oldDescriptionMarkers = [
+      'Producto para el catálogo administrable de NovaRealm',
+      'Periférico demo para complementar',
+    ];
+    if (
+      oldDescriptionMarkers.some((marker) =>
+        existing.description.includes(marker),
+      )
+    ) {
+      updates.push('description = ?');
+      params.push(product.description);
+    }
+
+    const oldImageMarkers = new Set([
+      '/products/component.svg',
+      '/products/component-placeholder.svg',
+      '/products/product-placeholder.svg',
+    ]);
+    if (oldImageMarkers.has(existing.imageUrl)) {
+      updates.push('imageUrl = ?');
+      params.push(imageForProductType(product.type));
+    }
+
+    params.push(product.slug);
+    await this.run(
+      `UPDATE products SET ${updates.join(', ')} WHERE slug = ?`,
+      ...params,
     );
   }
 }

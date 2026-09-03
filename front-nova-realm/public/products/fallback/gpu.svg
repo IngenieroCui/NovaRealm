@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-labelledby="title desc">
+  <title id="title">Tarjeta gráfica</title><desc id="desc">Ilustración genérica de una tarjeta gráfica.</desc>
+  <rect width="160" height="120" rx="16" fill="#171329"/>
+  <rect x="20" y="35" width="120" height="50" rx="7" fill="#312e81" stroke="#a78bfa" stroke-width="4"/><path d="M140 50h10v20h-10M30 85v12h10M52 85v12h10M74 85v12h10" stroke="#c4b5fd" stroke-width="4"/>
+  <circle cx="57" cy="60" r="15" fill="#8b5cf6" stroke="#ddd6fe" stroke-width="3"/><circle cx="103" cy="60" r="15" fill="#8b5cf6" stroke="#ddd6fe" stroke-width="3"/><path d="M57 49v22M46 60h22M103 49v22M92 60h22" stroke="#2e1065" stroke-width="3"/>
+</svg>

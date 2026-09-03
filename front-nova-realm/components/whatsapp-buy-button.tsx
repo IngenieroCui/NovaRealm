@@ -5,12 +5,12 @@ type WhatsAppBuyButtonProps = Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "hre
   children?: ReactNode;
 };
 
-export function WhatsAppBuyButton({ productName, price, priceLabel, fitScore, className, children = "Comprar por WhatsApp", ...props }: WhatsAppBuyButtonProps) {
+export function WhatsAppBuyButton({ productName, price, priceLabel, fitScore, productType, className, children = "Comprar por WhatsApp", ...props }: WhatsAppBuyButtonProps) {
   return (
     <a
       {...props}
       className={`whatsapp-buy-button${className ? ` ${className}` : ""}`}
-      href={getPurchaseWhatsAppUrl({ productName, price, priceLabel, fitScore })}
+      href={getPurchaseWhatsAppUrl({ productName, price, priceLabel, fitScore, productType })}
       target="_blank"
       rel="noopener noreferrer"
     >

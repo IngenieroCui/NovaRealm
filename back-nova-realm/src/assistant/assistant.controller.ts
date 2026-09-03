@@ -1,10 +1,15 @@
 import { Body, Controller, Post } from '@nestjs/common';
 import { AssistantService } from './assistant.service';
-import { AssistantActionRequestDto, ChatRequestDto, CompareRequestDto } from './assistant.dto';
+import { AssistantActionRequestDto, AssistantStartRequestDto, ChatRequestDto, CompareRequestDto } from './assistant.dto';
 
 @Controller('assistant')
 export class AssistantController {
   constructor(private readonly assistant: AssistantService) {}
+
+  @Post('start')
+  start(@Body() input: AssistantStartRequestDto) {
+    return this.assistant.start(input);
+  }
 
   @Post('chat')
   chat(@Body() input: ChatRequestDto) {

@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-labelledby="title desc">
+  <title id="title">Fuente de poder</title><desc id="desc">Ilustración genérica de una fuente de poder.</desc>
+  <rect width="160" height="120" rx="16" fill="#1c1917"/><rect x="28" y="27" width="104" height="66" rx="8" fill="#44403c" stroke="#fbbf24" stroke-width="4"/><circle cx="65" cy="60" r="22" fill="#292524" stroke="#fde68a" stroke-width="3"/><circle cx="65" cy="60" r="7" fill="#fbbf24"/><path d="M65 39v42M44 60h42M50 45l30 30M80 45 50 75" stroke="#78716c" stroke-width="3"/><path d="M101 48h15M101 60h15M101 72h15" stroke="#fde68a" stroke-width="4" stroke-linecap="round"/>
+</svg>

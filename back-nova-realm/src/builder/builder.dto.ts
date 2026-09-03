@@ -1,7 +1,7 @@
 import { Type } from 'class-transformer';
 import { ArrayMaxSize, IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsOptional, IsString, Min, ValidateNested, MaxLength } from 'class-validator';
 import { ProductType } from '../catalog/product.types';
-import { WorkloadPreferenceDto } from '../recommendations/recommendation.dto';
+import { RecommendationPreferencesDto, WorkloadPreferenceDto } from '../recommendations/recommendation.dto';
 
 export class BuilderRequestDto {
   @IsArray() @ArrayMaxSize(12) @IsString({ each: true }) itemSlugs: string[] = [];
@@ -10,6 +10,7 @@ export class BuilderRequestDto {
   @IsOptional() @IsBoolean() assemblySelected?: boolean;
   @IsOptional() @IsBoolean() complete?: boolean;
   @IsOptional() @IsArray() @ArrayMaxSize(8) @ValidateNested({ each: true }) @Type(() => WorkloadPreferenceDto) workloads?: WorkloadPreferenceDto[];
+  @IsOptional() @ValidateNested() @Type(() => RecommendationPreferencesDto) preferences?: RecommendationPreferencesDto;
 }
 
 export class ComponentRecommendationRequestDto extends BuilderRequestDto {
@@ -21,10 +22,11 @@ export class AutoBuildRequestDto {
   @IsInt() @Min(500000) budgetMax!: number;
   @IsOptional() @IsArray() @ArrayMaxSize(8) @IsString({ each: true }) workloadSlugs?: string[];
   @IsOptional() @IsBoolean() assembly?: boolean;
+  @IsOptional() @ValidateNested() @Type(() => RecommendationPreferencesDto) preferences?: RecommendationPreferencesDto;
 }
 
 export class BuilderActionDto {
-  @IsIn(['ADD_TO_BUILD', 'REMOVE_FROM_BUILD', 'REPLACE_COMPONENT', 'CLEAR_BUILD', 'ADD_ASSEMBLY', 'REMOVE_ASSEMBLY', 'ADD_PERIPHERAL', 'REMOVE_PERIPHERAL', 'START_GUIDED', 'AUTO_BUILD', 'AUTO_SELECT'])
+  @IsIn(['ADD_TO_BUILD', 'REMOVE_FROM_BUILD', 'REPLACE_COMPONENT', 'CLEAR_BUILD', 'ADD_ASSEMBLY', 'REMOVE_ASSEMBLY', 'ADD_PERIPHERAL', 'REMOVE_PERIPHERAL', 'START_GUIDED', 'AUTO_BUILD', 'AUTO_SELECT', 'GO_TO_STEP', 'RETURN_TO_CURRENT_STEP'])
   action!: string;
   @IsArray() @ArrayMaxSize(12) @IsString({ each: true }) currentSlugs: string[] = [];
   @IsOptional() @IsString() @MaxLength(120) productSlug?: string;
@@ -36,6 +38,8 @@ export class BuilderActionDto {
   @IsOptional() @IsIn(['GUIDED', 'AUTO']) mode?: 'GUIDED' | 'AUTO';
   @IsOptional() @IsString() @MaxLength(160) label?: string;
   @IsOptional() @IsArray() @ArrayMaxSize(8) @ValidateNested({ each: true }) @Type(() => WorkloadPreferenceDto) workloads?: WorkloadPreferenceDto[];
+  @IsOptional() @ValidateNested() @Type(() => RecommendationPreferencesDto) preferences?: RecommendationPreferencesDto;
+  @IsOptional() @IsIn(['cheaper', 'powerful']) preference?: 'cheaper' | 'powerful';
 }
 
 export class UpgradePcDto {

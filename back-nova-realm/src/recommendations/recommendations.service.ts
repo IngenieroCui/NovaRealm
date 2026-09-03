@@ -22,6 +22,15 @@ interface ScoreDraft extends Omit<
   efficiency: number;
 }
 
+export interface RecommendationRationale {
+  reasons: string[];
+  tradeoffs: string[];
+}
+
+type ScoredRecommendationWithRationale = ScoredRecommendation & {
+  rationale: RecommendationRationale;
+};
+
 @Injectable()
 export class RecommendationsService {
   constructor(
@@ -88,12 +97,15 @@ export class RecommendationsService {
         valueFit,
         input,
       );
+      const ramOverspendPenalty = this.ramOverspendPenalty(draft.product, workloadEntities);
+      const rationale = this.recommendationRationale(draft.product, workloadEntities, input, ramOverspendPenalty);
       return {
         ...publicDraft,
         valueFit,
-        fitScore,
+        fitScore: this.round(fitScore - ramOverspendPenalty),
         strengths,
         weaknesses,
+        rationale,
       };
     });
 
@@ -191,6 +203,26 @@ export class RecommendationsService {
     };
   }
 
+  private ramOverspendPenalty(product: Product, workloads: Workload[]) {
+    const officeWorkloads = workloads.filter((workload) => workload.slug === 'ofimatica-basica' || (workload.type === 'PROFESSIONAL' && workload.recommendedRamGb <= 16));
+    if (!officeWorkloads.length || workloads.some((workload) => workload.type !== 'PROFESSIONAL' || workload.recommendedRamGb > 16)) return 0;
+    const target = Math.max(...officeWorkloads.map((workload) => workload.recommendedRamGb));
+    const capacity = product.ramGb ?? 0;
+    return capacity >= target * 4 ? 20 : capacity >= target * 2 ? 10 : 0;
+  }
+
+  private recommendationRationale(product: Product, workloads: Workload[], input: RecommendationRequestDto, ramOverspendPenalty: number) {
+    const reasons: string[] = [];
+    const tradeoffs: string[] = [];
+    const ramTarget = Math.max(0, ...workloads.map((workload) => workload.recommendedRamGb));
+    if (ramTarget && product.ramGb === ramTarget) reasons.push(`Cumple los ${ramTarget} GB recomendados para el uso seleccionado.`);
+    if (input.preferences?.futureUpgrade && (product.upgradeabilityScore ?? 0) >= 80) reasons.push('Ofrece más margen de actualización.');
+    if (ramOverspendPenalty) tradeoffs.push(`Tiene ${product.ramGb ?? 0} GB, más capacidad de la necesaria para ofimática; se aplicó una penalización de ${ramOverspendPenalty} puntos.`);
+    if (input.budgetMax && product.price <= input.budgetMax * 0.85) reasons.push('Deja más presupuesto para componentes que sí afectan este uso.');
+    if (!tradeoffs.length && product.price > (input.budgetPreferred ?? input.budgetMax ?? Number.MAX_SAFE_INTEGER) * 0.95) tradeoffs.push('Utiliza casi todo el presupuesto disponible.');
+    return { reasons: reasons.slice(0, 4), tradeoffs: tradeoffs.slice(0, 3) };
+  }
+
   private calculateBudgetFit(price: number, max?: number, preferred?: number) {
     const reference = preferred ?? max;
     if (!reference) return 85;
@@ -209,11 +241,11 @@ export class RecommendationsService {
   }
 
   private assignCategories(
-    scored: Array<Omit<ScoredRecommendation, 'category' | 'categoryLabel'>>,
+    scored: Array<Omit<ScoredRecommendation, 'category' | 'categoryLabel'> & { rationale: RecommendationRationale }>,
   ) {
     if (!scored.length) return [];
     const remaining = [...scored];
-    const result: ScoredRecommendation[] = [];
+    const result: ScoredRecommendationWithRationale[] = [];
     const take = (
       category: RecommendationCategory,
       label: string,
@@ -238,14 +270,14 @@ export class RecommendationsService {
       'Alternativa económica',
       (a, b) => a.product.price - b.product.price || b.fitScore - a.fitScore,
     );
-    take(
-      'PREMIUM_OPTION',
-      'Mejor pensando a futuro',
-      (a, b) =>
-        b.performanceFit +
-        b.upgradeabilityFit * 0.35 -
-        (a.performanceFit + a.upgradeabilityFit * 0.35),
-    );
+    const baseline = result[0];
+    const premium = [...remaining]
+      .sort((a, b) => b.performanceFit + b.upgradeabilityFit * 0.35 - (a.performanceFit + a.upgradeabilityFit * 0.35))
+      .find((candidate) => candidate.performanceFit >= (baseline?.performanceFit ?? 0) + 8 || candidate.upgradeabilityFit >= (baseline?.upgradeabilityFit ?? 0) + 12);
+    if (premium) {
+      remaining.splice(remaining.indexOf(premium), 1);
+      result.push({ ...premium, category: 'PREMIUM_OPTION', categoryLabel: 'Mejor pensando a futuro' });
+    }
     return result;
   }
 

@@ -6,8 +6,9 @@ import { CatalogService } from '../catalog/catalog.service';
 import { RecommendationRequestDto } from '../recommendations/recommendation.dto';
 import { RecommendationsService } from '../recommendations/recommendations.service';
 import { WorkloadsService } from '../workloads/workloads.service';
-import { AssistantActionRequestDto, AssistantContextDto, AwaitingField, ChatRequestDto, CompareRequestDto, ConversationCriteriaDto, ConversationStage, QuickReplyDto, ShoppingIntent } from './assistant.dto';
-import { builderReply, messageReply, quickRepliesFor } from './quick-reply.factory';
+import { AssistantActionRequestDto, AssistantContextDto, AssistantStartRequestDto, AwaitingField, ChatRequestDto, CompareRequestDto, ConversationCriteriaDto, ConversationStage, QuickReplyDto, ShoppingIntent, UseProfile } from './assistant.dto';
+import { DiscoveryDecision, DiscoveryPolicyService } from './discovery-policy.service';
+import { builderReply, messageReply, quickRepliesFor, upgradeGoalReplies } from './quick-reply.factory';
 
 const BUILDER_COMPONENT_TYPES = [ProductType.CPU, ProductType.MOTHERBOARD, ProductType.RAM, ProductType.GPU, ProductType.STORAGE, ProductType.PSU, ProductType.COOLING, ProductType.CASE];
 const WINDOWS_SPECS_COMMAND = `$cpu=(Get-CimInstance Win32_Processor).Name; $gpu=(Get-CimInstance Win32_VideoController).Name -join ', '; $ram=[math]::Round(((Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum).Sum/1GB)); $board=(Get-CimInstance Win32_BaseBoard | ForEach-Object { $_.Manufacturer + ' ' + $_.Product }) -join ', '; $disk=(Get-CimInstance Win32_DiskDrive).Model -join ', '; [pscustomobject]@{ CPU=$cpu; GPU=$gpu; RAM="$ram GB"; Motherboard=$board; Storage=$disk } | Format-List`;
@@ -19,12 +20,49 @@ const SYSTEM_INFO_GUIDE = {
 
 @Injectable()
 export class AssistantService {
-  constructor(private readonly ai: AiService, private readonly workloads: WorkloadsService, private readonly recommendations: RecommendationsService, private readonly builder: BuilderService, private readonly catalog: CatalogService) {}
+  constructor(private readonly ai: AiService, private readonly workloads: WorkloadsService, private readonly recommendations: RecommendationsService, private readonly builder: BuilderService, private readonly catalog: CatalogService, private readonly discoveryPolicy: DiscoveryPolicyService = new DiscoveryPolicyService()) {}
+
+  async start(input: AssistantStartRequestDto) {
+    const criteria = input.criteria ?? {};
+    const product = input.context?.productSlug
+      ? await this.catalog.findBySlug(input.context.productSlug).catch(() => undefined)
+      : undefined;
+    let message: string;
+    try {
+      message = await this.ai.generateGreeting({ criteria, context: input.context, product });
+    } catch {
+      message = 'Hola, soy Nova. Cuéntame qué buscas y te ayudo a elegir.';
+    }
+    if (product) return this.response({ message, ...this.base(input.context?.shoppingIntent, criteria, input.context), product, quickReplies: [] }, ConversationStage.RECOMMENDING, null, true, 'assistant-start');
+    const intent = input.context?.shoppingIntent;
+    if (intent === undefined) return this.response({ message, ...this.base(undefined, criteria, input.context), quickReplies: quickRepliesFor('INTENT') }, ConversationStage.DISCOVER_INTENT, 'INTENT', true, 'assistant-start');
+    const decision = this.discoveryPolicy.next(intent, criteria);
+    if (decision) {
+      let reply = message;
+      try {
+        reply = await this.ai.composeConversationReply({ userMessage: 'El usuario abrió Nova desde una opción de la interfaz.', shoppingIntent: intent, criteria, stage: decision.stage, awaiting: decision.awaiting, verified: { reason: decision.reason, knownCriteria: criteria } });
+      } catch { /* greeting remains a safe fallback */ }
+      return this.response({ message: reply, ...this.base(intent, criteria, input.context), quickReplies: quickRepliesFor(decision.awaiting, intent) }, decision.stage, decision.awaiting, true, 'assistant-start');
+    }
+    if (intent === ShoppingIntent.COMPONENT && !criteria.requestedComponent) {
+      let reply = message;
+      try { reply = await this.ai.composeConversationReply({ userMessage: 'El usuario abrió Nova desde una opción de la interfaz.', shoppingIntent: intent, criteria, stage: ConversationStage.COMPONENT, awaiting: 'COMPONENT_SELECTION', verified: { reason: 'component type is not known', knownCriteria: criteria } }); } catch { /* fallback */ }
+      return this.response({ message: reply, ...this.base(intent, criteria, input.context), quickReplies: [] }, ConversationStage.COMPONENT, 'COMPONENT_SELECTION', true, 'assistant-start');
+    }
+    if (intent === ShoppingIntent.UPGRADE_PC) {
+      let reply = message;
+      try { reply = await this.ai.answerWithVerifiedContext('upgrade-start', 'Pide el CPU, GPU y RAM actuales, o que pegue la salida del comando de Windows.', 'El usuario abrió Nova para mejorar su PC.', { currentPc: input.context?.currentPc ?? null }); } catch { /* fallback */ }
+      return this.response({ message: reply, ...this.base(intent, criteria, input.context), systemInfoGuide: SYSTEM_INFO_GUIDE, quickReplies: [] }, ConversationStage.UPGRADE, null, true, 'assistant-start');
+    }
+    return this.response({ message, ...this.base(intent, criteria, input.context), quickReplies: [] }, ConversationStage.RECOMMENDING, null, true, 'assistant-start');
+  }
 
   async chat(input: ChatRequestDto) {
     const previousCriteria = input.criteria ?? input.filters ?? {};
     const direct = input.quickReply ? this.applyQuickReply(input.quickReply, previousCriteria) : null;
-    const analysisMessage = await this.withProductContext(input.message, input.context);
+    const effectiveContext: AssistantContextDto = { ...(input.context ?? {}), ...(direct?.upgradeGoal ? { upgradeGoal: direct.upgradeGoal } : {}) };
+    const handlerInput = { ...input, context: effectiveContext };
+    const analysisMessage = await this.withProductContext(input.message, effectiveContext);
     let aiTurn: ChatTurnResult | null = null;
     if (!direct) {
       try { aiTurn = await this.ai.chatTurn(analysisMessage, input.conversation ?? [], await this.workloads.findAll(), previousCriteria, input.context?.shoppingIntent ?? input.shoppingIntent); }
@@ -35,32 +73,34 @@ export class AssistantService {
     const inferredIntent = aiTurn?.shoppingIntent;
     const shoppingIntent = direct?.intent ?? explicitIntent ?? ((aiTurn?.intentChanged || !previousIntent) && (aiTurn?.intentConfidence ?? 0) >= 0.55 ? inferredIntent : undefined) ?? previousIntent ?? inferredIntent ?? this.detectShoppingIntent(input.message);
     const intentChanged = Boolean(previousIntent && shoppingIntent !== previousIntent);
-    const criteria = this.mergeCriteria(previousCriteria, aiTurn?.extracted, this.extractDeterministicCriteria(input.message, input.context), direct?.criteria);
-    const builderMode = intentChanged ? direct?.builderMode : direct?.builderMode ?? aiTurn?.builderPreference ?? input.context?.builderMode;
-    const base = this.base(shoppingIntent, criteria);
-    if (shoppingIntent === ShoppingIntent.CUSTOM_PC && builderMode === 'GUIDED' && input.context?.builderStep && BUILDER_COMPONENT_TYPES.includes(input.context.builderStep as ProductType)) return this.handleGuidedBuilder(input, criteria, base);
-    if (shoppingIntent === ShoppingIntent.UPGRADE_PC) return this.handleUpgrade(input, criteria, aiTurn, base);
-    if (shoppingIntent === ShoppingIntent.COMPONENT) return this.handleComponent(input, criteria, aiTurn, base);
-    if (shoppingIntent === ShoppingIntent.CUSTOM_PC) return this.handleCustomPc(input, criteria, builderMode, aiTurn, base);
-    return this.handlePrebuilt(input, criteria, aiTurn, base);
+    const criteria = this.mergeCriteria(previousCriteria, aiTurn?.extracted, this.extractDeterministicCriteria(input.message, effectiveContext), direct?.criteria);
+    const builderMode = intentChanged ? direct?.builderMode : direct?.builderMode ?? aiTurn?.builderPreference ?? effectiveContext.builderMode;
+    const base = this.base(shoppingIntent, criteria, effectiveContext);
+    if (shoppingIntent === ShoppingIntent.CUSTOM_PC && builderMode === 'GUIDED' && effectiveContext.builderStep && BUILDER_COMPONENT_TYPES.includes(effectiveContext.builderStep as ProductType)) return this.handleGuidedBuilder(handlerInput, criteria, base);
+    if (shoppingIntent === ShoppingIntent.UPGRADE_PC) return this.handleUpgrade(handlerInput, criteria, aiTurn, base);
+    if (shoppingIntent === ShoppingIntent.COMPONENT) return this.handleComponent(handlerInput, criteria, aiTurn, base);
+    if (shoppingIntent === ShoppingIntent.CUSTOM_PC) return this.handleCustomPc(handlerInput, criteria, builderMode, aiTurn, base);
+    if (shoppingIntent === ShoppingIntent.PC_WITH_PERIPHERALS) return this.handlePcWithPeripherals(handlerInput, criteria, aiTurn, base);
+    return this.handlePrebuilt(handlerInput, criteria, aiTurn, base);
   }
 
   async action(input: AssistantActionRequestDto) {
     const criteria = input.criteria ?? {};
-    const result = await this.builder.applyAction(input.builderAction);
+    const effectiveWorkloads = await this.effectiveWorkloads(criteria);
+    const result = await this.builder.applyAction({ ...input.builderAction, workloads: input.builderAction.workloads ?? effectiveWorkloads, preferences: input.builderAction.preferences ?? criteria.preferences });
     const candidates = (result.recommendations ?? []) as ComponentCandidate[];
     const recommended = candidates.find((item) => item.recommendedRole === 'RECOMMENDED') ?? candidates[0];
     let message: string;
     try {
-      message = await this.ai.composeConversationReply({ userMessage: input.builderAction.label ?? input.builderAction.action, shoppingIntent: ShoppingIntent.CUSTOM_PC, criteria, stage: result.flow?.currentStep === 'DONE' ? ConversationStage.COMPLETE : ConversationStage.BUILDER, awaiting: null, verified: { action: result.action, selectedProduct: result.product, build: result.summary, flow: result.flow, nextCandidates: candidates.slice(0, 5) } });
+      message = await this.ai.composeConversationReply({ userMessage: input.builderAction.label ?? input.builderAction.action, shoppingIntent: ShoppingIntent.CUSTOM_PC, criteria, stage: result.flow?.currentStep === 'DONE' ? ConversationStage.COMPLETE : ConversationStage.BUILDER, awaiting: null, verified: { action: result.action, selectedProduct: result.product, remainingBudget: result.summary.budgetRemaining, nextStep: result.flow?.currentStep, recommendedCandidate: recommended ?? null, candidateRationale: recommended?.rationale ?? null, balanceWarnings: result.summary.warnings, build: result.summary, flow: result.flow, nextCandidates: candidates.slice(0, 5), preferences: input.builderAction.preferences ?? criteria.preferences } });
     } catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build: result.summary, flow: result.flow, componentRecommendations: candidates }); }
-    return this.response({ message, ...this.base(ShoppingIntent.CUSTOM_PC, criteria), build: result.summary, flow: result.flow, componentRecommendations: candidates, lastRecommendedProductSlug: recommended?.slug, lastComparedProductSlugs: [], lastBuilderAdviceTopic: result.flow?.currentStep, builderPreference: input.context?.builderPreference, quickReplies: this.builderConversationReplies(result.flow?.currentStep) }, result.flow?.currentStep === 'DONE' ? ConversationStage.COMPLETE : ConversationStage.BUILDER, null, true, 'builder-action');
+    return this.response({ message, ...this.base(ShoppingIntent.CUSTOM_PC, criteria, input.context), build: result.summary, flow: result.flow, componentRecommendations: candidates, lastRecommendedProductSlug: recommended?.slug, lastComparedProductSlugs: [], lastBuilderAdviceTopic: result.flow?.currentStep, builderPreference: input.context?.builderPreference, quickReplies: this.builderConversationReplies(result.flow?.currentStep) }, result.flow?.currentStep === 'DONE' ? ConversationStage.COMPLETE : ConversationStage.BUILDER, null, true, 'builder-action');
   }
 
   private async handlePrebuilt(input: ChatRequestDto, criteria: ConversationCriteriaDto, turn: ChatTurnResult | null, base: Record<string, unknown>) {
-    const awaiting = this.discoveryAwaiting(criteria);
-    if (awaiting) return this.discoveryResponse(input, criteria, turn, base, awaiting, awaiting === 'USE' ? ConversationStage.DISCOVER_USE : ConversationStage.DISCOVER_BUDGET);
-    const filters = this.toRecommendationRequest(criteria);
+    const decision = this.discoveryPolicy.next(base.shoppingIntent as ShoppingIntent | undefined, criteria);
+    if (decision) return this.discoveryResponse(input, criteria, base, decision);
+    const filters = await this.toRecommendationRequest(criteria);
     const result = await this.recommendations.recommend(filters);
     let message: string;
     try { message = result.recommendations.length ? await this.ai.explainRecommendations(filters, result.recommendations) : await this.ai.answerWithVerifiedContext('recommendation-answer', 'Explica que no hay opciones responsables y propone ajustar un solo criterio.', input.message, { criteria, availableRecommendations: [] }); }
@@ -69,19 +109,19 @@ export class AssistantService {
   }
 
   private async handleCustomPc(input: ChatRequestDto, criteria: ConversationCriteriaDto, mode: 'GUIDED' | 'AUTO' | undefined, turn: ChatTurnResult | null, base: Record<string, unknown>) {
-    const awaiting = this.discoveryAwaiting(criteria);
-    if (awaiting) return this.discoveryResponse(input, criteria, turn, base, awaiting, awaiting === 'USE' ? ConversationStage.DISCOVER_USE : ConversationStage.DISCOVER_BUDGET);
-    if (!mode) return this.discoveryResponse(input, criteria, turn, base, 'BUILDER_MODE', ConversationStage.BUILDER_MODE);
-    const workloads = criteria.workloads ?? [];
+    const decision = mode ? null : this.discoveryPolicy.next(base.shoppingIntent as ShoppingIntent | undefined, criteria);
+    if (decision) return this.discoveryResponse(input, criteria, base, decision);
+    if (!mode) return this.discoveryResponse(input, criteria, base, { awaiting: 'BUILDER_MODE', stage: ConversationStage.BUILDER_MODE, reason: 'custom builder mode is not known' });
+    const workloads = await this.effectiveWorkloads(criteria);
     if (mode === 'AUTO') {
-      const build = await this.builder.autoBuild({ budgetMax: criteria.budgetMax!, workloadSlugs: workloads.map((item) => item.slug), assembly: input.context?.assemblySelected });
-      const flow = await this.builder.flow(build.products.map((item) => item.slug), 'AUTO');
+      const build = await this.builder.autoBuild({ budgetMax: criteria.budgetMax!, workloadSlugs: (workloads ?? []).map((item) => item.slug), assembly: input.context?.assemblySelected, preferences: criteria.preferences });
+      const flow = await this.builder.flow(build.products.map((item) => item.slug), 'AUTO', workloads);
       let message: string;
       try { message = await this.ai.composeConversationReply({ userMessage: input.message, shoppingIntent: ShoppingIntent.CUSTOM_PC, criteria, stage: ConversationStage.COMPLETE, awaiting: null, verified: { build, flow } }); }
       catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build, flow }); }
       return this.response({ message, ...base, build, flow, quickReplies: [] }, ConversationStage.COMPLETE, null, true, 'builder-answer');
     }
-    const result = await this.builder.applyAction({ action: 'START_GUIDED', currentSlugs: input.context?.buildSlugs ?? [], budgetMax: criteria.budgetMax, workloads, mode: 'GUIDED', assemblySelected: input.context?.assemblySelected });
+    const result = await this.builder.applyAction({ action: 'START_GUIDED', currentSlugs: input.context?.buildSlugs ?? [], budgetMax: criteria.budgetMax, workloads, preferences: criteria.preferences, mode: 'GUIDED', assemblySelected: input.context?.assemblySelected });
     let message: string;
     try { message = await this.ai.composeConversationReply({ userMessage: input.message, shoppingIntent: ShoppingIntent.CUSTOM_PC, criteria, stage: ConversationStage.BUILDER, awaiting: null, verified: { build: result.summary, flow: result.flow, candidates: result.recommendations } }); }
     catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build: result.summary, flow: result.flow }); }
@@ -90,10 +130,9 @@ export class AssistantService {
   }
 
   private async handleComponent(input: ChatRequestDto, criteria: ConversationCriteriaDto, turn: ChatTurnResult | null, base: Record<string, unknown>) {
-    if (!criteria.requestedComponent) return this.discoveryResponse(input, criteria, turn, base, 'COMPONENT_SELECTION', ConversationStage.COMPONENT);
-    const awaiting = this.discoveryAwaiting(criteria);
-    if (awaiting) return this.discoveryResponse(input, criteria, turn, base, awaiting, awaiting === 'USE' ? ConversationStage.DISCOVER_USE : ConversationStage.DISCOVER_BUDGET);
-    const result = await this.builder.recommendComponents({ componentType: criteria.requestedComponent as ProductType, itemSlugs: input.context?.buildSlugs ?? [], budgetMax: criteria.budgetMax, workloads: criteria.workloads, assemblySelected: input.context?.assemblySelected });
+    if (!criteria.requestedComponent) return this.discoveryResponse(input, criteria, base, { awaiting: 'COMPONENT_SELECTION', stage: ConversationStage.COMPONENT, reason: 'component type is not known' });
+    const effectiveWorkloads = await this.effectiveWorkloads(criteria);
+    const result = await this.builder.recommendComponents({ componentType: criteria.requestedComponent as ProductType, itemSlugs: input.context?.buildSlugs ?? [], budgetMax: criteria.budgetMax, workloads: effectiveWorkloads, preferences: criteria.preferences, assemblySelected: input.context?.assemblySelected });
     let message: string;
     try { message = await this.ai.composeConversationReply({ userMessage: input.message, shoppingIntent: ShoppingIntent.COMPONENT, criteria, stage: ConversationStage.COMPONENT, awaiting: null, verified: { candidates: result.recommendations, warnings: result.warnings } }); }
     catch { return this.aiUnavailable(criteria, ShoppingIntent.COMPONENT, { componentRecommendations: result.recommendations }); }
@@ -108,8 +147,12 @@ export class AssistantService {
       const message = await this.ensureQuestion(turn, 'Explica que necesitas las especificaciones actuales y menciona solo los datos faltantes.', input.message, { missingPc, currentPc });
       return this.response({ message, ...base, currentPc, upgradeGoal: upgradeGoal ?? null, systemInfoGuide: SYSTEM_INFO_GUIDE, quickReplies: [] }, ConversationStage.UPGRADE, null, Boolean(turn), 'interpret+reply');
     }
-    if (!upgradeGoal) return this.discoveryResponse(input, criteria, turn, { ...base, currentPc }, 'USE', ConversationStage.UPGRADE);
-    if (!criteria.budgetMax) return this.discoveryResponse(input, criteria, turn, { ...base, currentPc, upgradeGoal }, 'BUDGET', ConversationStage.UPGRADE);
+    if (!upgradeGoal) {
+      let message = '¿Qué quieres mejorar primero: juegos, edición, programación o la fluidez general del PC?';
+      try { message = await this.ai.answerWithVerifiedContext('upgrade-goal', 'Pide el objetivo de mejora sin pedir todavía presupuesto.', input.message, { currentPc }); } catch { /* fallback */ }
+      return this.response({ message, ...base, currentPc, quickReplies: upgradeGoalReplies() }, ConversationStage.UPGRADE, null, true, 'upgrade-goal');
+    }
+    if (!criteria.budgetMax) return this.discoveryResponse(input, criteria, { ...base, currentPc, upgradeGoal }, { awaiting: 'BUDGET', stage: ConversationStage.UPGRADE, reason: 'maximum upgrade budget is not known' });
     const upgrade = await this.builder.analyzeUpgrade({ ...currentPc, goal: upgradeGoal, budgetMax: criteria.budgetMax });
     let message: string;
     try { message = await this.ai.composeConversationReply({ userMessage: input.message, shoppingIntent: ShoppingIntent.UPGRADE_PC, criteria, stage: ConversationStage.UPGRADE, awaiting: null, verified: { upgrade } }); }
@@ -119,8 +162,9 @@ export class AssistantService {
 
   private async handleGuidedBuilder(input: ChatRequestDto, criteria: ConversationCriteriaDto, base: Record<string, unknown>) {
     const currentSlugs = input.context?.buildSlugs ?? [];
-    const flow = await this.builder.flow(currentSlugs, 'GUIDED');
-    const build = await this.builder.summarize({ itemSlugs: currentSlugs, budgetMax: criteria.budgetMax, workloads: criteria.workloads, assemblySelected: input.context?.assemblySelected });
+    const effectiveWorkloads = await this.effectiveWorkloads(criteria);
+    const flow = await this.builder.flow(currentSlugs, 'GUIDED', effectiveWorkloads, input.context?.builderEditingStep);
+    const build = await this.builder.summarize({ itemSlugs: currentSlugs, budgetMax: criteria.budgetMax, workloads: effectiveWorkloads, preferences: criteria.preferences, assemblySelected: input.context?.assemblySelected });
     if (!BUILDER_COMPONENT_TYPES.includes(flow.currentStep as ProductType)) {
       let message: string;
       try { message = await this.ai.answerWithVerifiedContext('builder-answer', 'Responde la duda sobre la configuración terminada sin modificarla.', input.message, { criteria, build, flow }); }
@@ -128,22 +172,50 @@ export class AssistantService {
       return this.response({ message, ...base, build, flow, quickReplies: [] }, ConversationStage.COMPLETE, null, true, 'builder-answer');
     }
     const currentStep = flow.currentStep as ProductType;
-    const candidateResult = await this.builder.recommendComponents({ componentType: currentStep, itemSlugs: currentSlugs, budgetMax: criteria.budgetMax, workloads: criteria.workloads, assemblySelected: input.context?.assemblySelected, preference: input.context?.builderPreference === 'balanced' ? undefined : input.context?.builderPreference });
+    const candidateResult = await this.builder.recommendComponents({ componentType: currentStep, itemSlugs: currentSlugs, budgetMax: criteria.budgetMax, workloads: effectiveWorkloads, preferences: criteria.preferences, assemblySelected: input.context?.assemblySelected, preference: input.context?.builderPreference === 'balanced' ? undefined : input.context?.builderPreference });
     const candidates = candidateResult.recommendations;
     const recommended = candidates.find((item) => item.recommendedRole === 'RECOMMENDED') ?? candidates[0];
     let message: string;
-    try { message = await this.ai.answerBuilderQuestion(input.message, { workload: criteria.workloads ?? [], budgetMax: criteria.budgetMax, remainingBudget: build.budgetRemaining, currentStep, currentBuild: build.components, candidates, lastRecommendedProductSlug: input.context?.lastRecommendedProductSlug ?? recommended?.slug, lastComparedProductSlugs: input.context?.lastComparedProductSlugs, balanceWarnings: build.warnings }); }
+      try { message = await this.ai.answerBuilderQuestion(input.message, { workload: effectiveWorkloads ?? [], budgetMax: criteria.budgetMax, remainingBudget: build.budgetRemaining, currentStep, currentBuild: build.components, candidates, lastRecommendedProductSlug: input.context?.lastRecommendedProductSlug ?? recommended?.slug, lastComparedProductSlugs: input.context?.lastComparedProductSlugs, balanceWarnings: build.warnings, preferences: criteria.preferences, useProfile: criteria.useProfile }); }
     catch { return this.aiUnavailable(criteria, ShoppingIntent.CUSTOM_PC, { build, flow, componentRecommendations: candidates }); }
     return this.response({ message, ...base, build, flow, componentRecommendations: candidates, warnings: candidateResult.warnings, lastRecommendedProductSlug: recommended?.slug ?? input.context?.lastRecommendedProductSlug, lastComparedProductSlugs: input.context?.lastComparedProductSlugs, lastBuilderAdviceTopic: currentStep, builderPreference: input.context?.builderPreference, quickReplies: this.builderConversationReplies(currentStep) }, ConversationStage.BUILDER, null, true, 'builder-answer');
   }
 
-  private async discoveryResponse(input: ChatRequestDto, criteria: ConversationCriteriaDto, turn: ChatTurnResult | null, base: Record<string, unknown>, awaiting: Exclude<AwaitingField, null>, stage: ConversationStage) {
-    let message = turn?.nextQuestionPurpose === awaiting ? turn.reply : undefined;
-    if (!message) {
-      try { message = await this.ai.composeConversationReply({ userMessage: input.message, shoppingIntent: base.shoppingIntent as ShoppingIntent, criteria, stage, awaiting, verified: { reason: `El backend necesita únicamente ${awaiting}` } }); }
-      catch { return this.aiUnavailable(criteria, base.shoppingIntent as ShoppingIntent); }
+  private async handlePcWithPeripherals(input: ChatRequestDto, criteria: ConversationCriteriaDto, turn: ChatTurnResult | null, base: Record<string, unknown>) {
+    const decision = this.discoveryPolicy.next(ShoppingIntent.PC_WITH_PERIPHERALS, criteria);
+    if (decision) return this.discoveryResponse(input, criteria, base, decision);
+    const effectiveWorkloads = await this.effectiveWorkloads(criteria);
+    const requestedTypes = criteria.requestedPeripherals?.length ? criteria.requestedPeripherals : ['MONITOR'];
+    const available = await this.builder.recommendPeripherals(requestedTypes as ProductType[], criteria.budgetMax, criteria.resolution, criteria.targetFps);
+    const baselinePeripherals = requestedTypes.map((type) => available.find((product) => product.type === type)).filter((product): product is NonNullable<typeof product> => Boolean(product));
+    const missing = requestedTypes.filter((type) => !baselinePeripherals.some((product) => product.type === type));
+    if (missing.length) {
+      let message = `No encontré opciones disponibles para: ${missing.join(', ')}.`;
+      try { message = await this.ai.answerWithVerifiedContext('peripheral-answer', 'Explica qué categorías de periféricos no se pueden cubrir actualmente.', input.message, { missing, requestedTypes }); } catch { /* fallback */ }
+      return this.response({ message, ...base, peripheralRecommendations: baselinePeripherals, quickReplies: [] }, ConversationStage.RECOMMENDING, null, true, 'peripheral-answer');
     }
-    return this.response({ message, ...base, criteria, filters: criteria, quickReplies: quickRepliesFor(awaiting, base.shoppingIntent as ShoppingIntent) }, stage, awaiting, true, turn?.nextQuestionPurpose === awaiting ? 'interpret+reply' : 'conversation-reply');
+    const peripheralReserve = baselinePeripherals.reduce((sum, product) => sum + product.price, 0);
+    const pcBudget = (criteria.budgetMax ?? 0) - peripheralReserve;
+    if (pcBudget < 500000) {
+      let message = 'El presupuesto total no alcanza para cubrir el PC y los periféricos solicitados.';
+      try { message = await this.ai.answerWithVerifiedContext('peripheral-budget', 'Explica que el presupuesto no alcanza para PC y periféricos.', input.message, { totalBudget: criteria.budgetMax, peripheralReserve, pcBudget }); } catch { /* fallback */ }
+      return this.response({ message, ...base, peripheralRecommendations: baselinePeripherals, bundleSummary: { totalBudget: criteria.budgetMax, reservedForPeripherals: peripheralReserve, pcBudget, peripheralTotal: peripheralReserve }, quickReplies: [] }, ConversationStage.RECOMMENDING, null, true, 'peripheral-budget');
+    }
+    const pcFilters: RecommendationRequestDto = { ...(await this.toRecommendationRequest(criteria)), budgetMax: pcBudget };
+    const result = await this.recommendations.recommend(pcFilters);
+    let message: string;
+    try { message = result.recommendations.length ? await this.ai.explainRecommendations(pcFilters, result.recommendations) : await this.ai.answerWithVerifiedContext('peripheral-recommendation', 'Explica que no hay opciones responsables para el PC dentro del presupuesto restante.', input.message, { pcBudget, peripheralReserve }); }
+    catch { return this.aiUnavailable(criteria, ShoppingIntent.PC_WITH_PERIPHERALS, { peripheralRecommendations: baselinePeripherals }); }
+    return this.response({ message, ...base, filters: pcFilters, recommendations: result.recommendations, peripheralRecommendations: baselinePeripherals, bundleSummary: { totalBudget: criteria.budgetMax!, reservedForPeripherals: peripheralReserve, pcBudget, peripheralTotal: peripheralReserve }, scoring: result.scoring, quickReplies: [] }, ConversationStage.RECOMMENDING, null, true, 'peripheral-recommendation');
+  }
+
+  private async discoveryResponse(input: ChatRequestDto, criteria: ConversationCriteriaDto, base: Record<string, unknown>, decision: DiscoveryDecision | { awaiting: Exclude<AwaitingField, null>; stage: ConversationStage; reason: string }) {
+    const awaiting = decision.awaiting as Exclude<AwaitingField, null>;
+    let message: string;
+    try {
+      message = await this.ai.composeConversationReply({ userMessage: input.message, shoppingIntent: base.shoppingIntent as ShoppingIntent, criteria, stage: decision.stage, awaiting, verified: { reason: decision.reason, knownCriteria: criteria } });
+    } catch { return this.aiUnavailable(criteria, base.shoppingIntent as ShoppingIntent); }
+    return this.response({ message, ...base, criteria, filters: criteria, quickReplies: quickRepliesFor(awaiting, base.shoppingIntent as ShoppingIntent) }, decision.stage, awaiting, true, 'conversation-reply');
   }
 
   private async ensureQuestion(turn: ChatTurnResult | null, instruction: string, userMessage: string, verified: unknown) {
@@ -153,32 +225,78 @@ export class AssistantService {
   }
 
   private response(value: Record<string, unknown>, stage: ConversationStage, awaiting: AwaitingField, aiUsed: boolean, operation: string) { return { ...value, stage, awaiting, needsMoreInformation: awaiting !== null, ...(process.env.NODE_ENV === 'development' ? { debug: { aiUsed, operation, stage } } : {}) }; }
-  private base(intent: ShoppingIntent, criteria: ConversationCriteriaDto) { return { shoppingIntent: intent, criteria, filters: criteria, recommendations: [] }; }
+  private base(intent: ShoppingIntent | undefined, criteria: ConversationCriteriaDto, context?: AssistantContextDto) { return { shoppingIntent: intent, criteria, filters: criteria, recommendations: [], ...(context?.lastRecommendedProductSlug ? { lastRecommendedProductSlug: context.lastRecommendedProductSlug } : {}), ...(context?.lastComparedProductSlugs ? { lastComparedProductSlugs: context.lastComparedProductSlugs } : {}), ...(context?.lastBuilderAdviceTopic ? { lastBuilderAdviceTopic: context.lastBuilderAdviceTopic } : {}), ...(context?.builderPreference ? { builderPreference: context.builderPreference } : {}) }; }
   private aiUnavailable(criteria: ConversationCriteriaDto, intent?: ShoppingIntent, extra: Record<string, unknown> = {}) { const stage = intent === ShoppingIntent.CUSTOM_PC ? ConversationStage.BUILDER : intent === ShoppingIntent.UPGRADE_PC ? ConversationStage.UPGRADE : intent === ShoppingIntent.COMPONENT ? ConversationStage.COMPONENT : ConversationStage.DISCOVER_INTENT; return this.response({ message: 'No pude consultar a Nova en este momento. Puedes intentar nuevamente.', ...this.base(intent ?? ShoppingIntent.PREBUILT_PC, criteria), quickReplies: [], ...extra }, stage, null, false, 'fallback'); }
-  private discoveryAwaiting(criteria: ConversationCriteriaDto): 'USE' | 'BUDGET' | null { if (!criteria.workloads?.length) return 'USE'; if (!criteria.budgetMax) return 'BUDGET'; return null; }
 
   private applyQuickReply(reply: QuickReplyDto, previous: ConversationCriteriaDto) {
     if (reply.kind === 'SET_INTENT' && Object.values(ShoppingIntent).includes(reply.value as ShoppingIntent)) return { intent: reply.value as ShoppingIntent, criteria: previous };
     if (reply.kind === 'SET_BUDGET' && typeof reply.value === 'number' && reply.value >= 500000) return { criteria: { ...previous, budgetMax: Math.round(reply.value) } };
-    if (reply.kind === 'SET_WORKLOAD' && typeof reply.value === 'string') return { criteria: { ...previous, workloads: [{ slug: reply.value, importance: 1 }] } };
+    if (reply.kind === 'SET_USE_PROFILE' && ['GAMING', 'CREATIVE', 'PROGRAMMING', 'OFFICE'].includes(String(reply.value))) {
+      const useProfile = String(reply.value) as UseProfile;
+      if (useProfile === UseProfile.CREATIVE) return { criteria: { ...previous, useProfile, workloads: this.mergeWorkloads(previous.workloads, [{ slug: 'blender', importance: 1 }]) } };
+      if (useProfile === UseProfile.PROGRAMMING) return { criteria: { ...previous, useProfile, workloads: this.mergeWorkloads(previous.workloads, [{ slug: 'programacion', importance: 1 }]) } };
+      if (useProfile === UseProfile.OFFICE) return { criteria: { ...previous, useProfile, workloads: this.mergeWorkloads(previous.workloads, [{ slug: 'ofimatica-basica', importance: 1 }]) } };
+      return { criteria: { ...previous, useProfile: UseProfile.GAMING } };
+    }
+    if (reply.kind === 'SET_WORKLOAD' && typeof reply.value === 'string') return { criteria: { ...previous, workloads: this.mergeWorkloads(previous.workloads, [{ slug: reply.value, importance: 1 }]) } };
+    if (reply.kind === 'SET_CONNECTIVITY' && ['WIFI_ONLY', 'ETHERNET_OK', 'UNSURE'].includes(String(reply.value))) {
+      const value = String(reply.value);
+      return { criteria: { ...previous, preferences: value === 'UNSURE' ? previous.preferences : { ...(previous.preferences ?? {}), wifiRequired: value === 'WIFI_ONLY' }, discovery: { ...(previous.discovery ?? {}), connectivityAsked: true } } };
+    }
+    if (reply.kind === 'SET_GAMING_TARGET' && ['1080P_144', '1440P_144', '1080P_240', 'UNSURE'].includes(String(reply.value))) {
+      const target = { '1080P_144': { resolution: '1080p' as const, targetFps: 144 }, '1440P_144': { resolution: '1440p' as const, targetFps: 144 }, '1080P_240': { resolution: '1080p' as const, targetFps: 240 }, UNSURE: {} }[String(reply.value)];
+      return { criteria: { ...previous, ...target, discovery: { ...(previous.discovery ?? {}), gamingTargetAsked: true } } };
+    }
+    if (reply.kind === 'SET_DEVELOPMENT_LOAD' && ['IDE', 'DOCKER', 'VM', 'DOCKER_VM'].includes(String(reply.value))) {
+      const value = String(reply.value);
+      const added = value === 'DOCKER' ? ['docker'] : value === 'VM' ? ['maquinas-virtuales'] : value === 'DOCKER_VM' ? ['docker', 'maquinas-virtuales'] : [];
+      const multitaskingLevel: 'NORMAL' | 'HEAVY' = value === 'IDE' ? 'NORMAL' : 'HEAVY';
+      return { criteria: { ...previous, workloads: this.mergeWorkloads(previous.workloads, added.map((slug) => ({ slug, importance: 1 }))), preferences: { ...(previous.preferences ?? {}), multitaskingLevel }, discovery: { ...(previous.discovery ?? {}), developmentLoadAsked: true } } };
+    }
+    if (reply.kind === 'SET_UPGRADE_GOAL' && ['GAMING', 'GAMING_1440P', 'CREATIVE', 'DEVELOPMENT', 'GENERAL'].includes(String(reply.value))) {
+      const goals = { GAMING: 'Mejorar rendimiento en juegos', GAMING_1440P: 'Jugar a 1440p', CREATIVE: 'Edición y Blender', DEVELOPMENT: 'Programación, Docker y máquinas virtuales', GENERAL: 'Mejorar la fluidez general del PC' } as const;
+      return { criteria: previous, upgradeGoal: goals[String(reply.value) as keyof typeof goals] };
+    }
+    if (reply.kind === 'SET_PERIPHERALS' && ['MONITOR', 'DESK', 'FULL', 'UNSURE'].includes(String(reply.value))) {
+      const selected = { MONITOR: ['MONITOR'], DESK: ['MONITOR', 'KEYBOARD', 'MOUSE'], FULL: ['MONITOR', 'KEYBOARD', 'MOUSE', 'HEADSET'], UNSURE: undefined }[String(reply.value) as 'MONITOR' | 'DESK' | 'FULL' | 'UNSURE'];
+      return { criteria: { ...previous, ...(selected ? { requestedPeripherals: selected as ConversationCriteriaDto['requestedPeripherals'] } : {}), discovery: { ...(previous.discovery ?? {}), peripheralsAsked: true } } };
+    }
     if (reply.kind === 'SET_BUILDER_MODE' && ['GUIDED', 'AUTO'].includes(String(reply.value))) return { criteria: previous, builderMode: reply.value as 'GUIDED' | 'AUTO' };
     if (reply.kind === 'SEND_MESSAGE') return null;
     throw new BadRequestException('La respuesta rápida no es válida para este turno.');
   }
 
-  private mergeCriteria(...values: Array<ConversationCriteriaDto | undefined>): ConversationCriteriaDto { return values.reduce<ConversationCriteriaDto>((current, next) => next ? { ...current, ...next, preferences: { ...(current.preferences ?? {}), ...(next.preferences ?? {}) } } : current, {}); }
-  private extractDeterministicCriteria(message: string, context?: AssistantContextDto): ConversationCriteriaDto { const budgetMax = this.extractBudget(message); const requestedComponent = this.detectComponentType(message, context); const resolution = /(?:1440p|2k|qhd)/i.test(message) ? '1440p' : /(?:2160p|4k)/i.test(message) ? '4k' : /1080p/i.test(message) ? '1080p' : undefined; const fps = this.normalize(message).match(/(\d{2,3})\s*(?:fps|hz)/)?.[1]; return { ...(budgetMax ? { budgetMax } : {}), ...(requestedComponent ? { requestedComponent } : {}), ...(resolution ? { resolution } : {}), ...(fps && Number(fps) >= 30 && Number(fps) <= 360 ? { targetFps: Number(fps) } : {}) }; }
-  private toRecommendationRequest(criteria: ConversationCriteriaDto): RecommendationRequestDto { if (!criteria.workloads?.length) throw new BadRequestException('Falta el uso principal para recomendar.'); const { requestedComponent: _requestedComponent, ...rest } = criteria; return { ...rest, workloads: criteria.workloads }; }
+  private mergeCriteria(...values: Array<ConversationCriteriaDto | undefined>): ConversationCriteriaDto { return values.reduce<ConversationCriteriaDto>((current, next) => next ? { ...current, ...next, workloads: next.workloads ? this.mergeWorkloads(current.workloads, next.workloads) : current.workloads, preferences: { ...(current.preferences ?? {}), ...(next.preferences ?? {}) }, discovery: { ...(current.discovery ?? {}), ...(next.discovery ?? {}) } } : current, {}); }
+  private mergeWorkloads(previous: ConversationCriteriaDto['workloads'] = [], next: ConversationCriteriaDto['workloads'] = []) { const merged = new Map((previous ?? []).map((item) => [item.slug, item])); for (const item of next ?? []) merged.set(item.slug, item); return [...merged.values()].slice(0, 8); }
+  private extractDeterministicCriteria(message: string, context?: AssistantContextDto): ConversationCriteriaDto { const budgetMax = this.extractBudget(message); const requestedComponent = this.detectComponentType(message, context); const resolution = /(?:1440p|2k|qhd)/i.test(message) ? '1440p' : /(?:2160p|4k)/i.test(message) ? '4k' : /1080p/i.test(message) ? '1080p' : undefined; const fps = this.normalize(message).match(/(\d{2,3})\s*(?:fps|hz)/)?.[1]; const normalized = this.normalize(message); const wifiRequired = /(?:solo|tengo|necesito|con)\s*(?:uso\s*)?(?:wi[\s-]?fi|inalambric)|(?:ethernet|cable de red|con cable)/.test(normalized) ? !/(?:ethernet|cable de red|con cable|tengo cable)/.test(normalized) : undefined; return { ...(budgetMax ? { budgetMax } : {}), ...(requestedComponent ? { requestedComponent } : {}), ...(resolution ? { resolution } : {}), ...(fps && Number(fps) >= 30 && Number(fps) <= 360 ? { targetFps: Number(fps) } : {}), ...(wifiRequired !== undefined ? { preferences: { wifiRequired } } : {}) }; }
+  private async effectiveWorkloads(criteria: ConversationCriteriaDto): Promise<ConversationCriteriaDto['workloads']> {
+    if (criteria.workloads?.length) return criteria.workloads;
+    if (criteria.useProfile === UseProfile.GAMING) {
+      const games = (await this.workloads.findAll()).filter((workload) => workload.type === 'GAME').slice(0, 8);
+      return games.length ? games.map((workload) => ({ slug: workload.slug, importance: 1 / games.length })) : [];
+    }
+    if (criteria.useProfile === UseProfile.CREATIVE) return [{ slug: 'blender', importance: 1 }];
+    if (criteria.useProfile === UseProfile.PROGRAMMING) return [{ slug: 'programacion', importance: 1 }];
+    if (criteria.useProfile === UseProfile.OFFICE) return [{ slug: 'ofimatica-basica', importance: 1 }];
+    return [];
+  }
+
+  private async toRecommendationRequest(criteria: ConversationCriteriaDto): Promise<RecommendationRequestDto> {
+    const workloads = await this.effectiveWorkloads(criteria);
+    if (!workloads?.length) throw new BadRequestException('Falta el uso principal para recomendar.');
+    const { requestedComponent: _requestedComponent, useProfile: _useProfile, discovery: _discovery, requestedPeripherals: _requestedPeripherals, ...rest } = criteria;
+    return { ...rest, workloads };
+  }
   private builderConversationReplies(step?: string): QuickReplyDto[] { if (!step || step === 'DONE') return []; return [messageReply('builder-why', '¿Por qué esta?'), messageReply('builder-compare', '¿Qué diferencia hay?'), messageReply('builder-save', '¿Puedo ahorrar aquí?'), builderReply('builder-auto-select', 'Que Nova elija', 'AUTO_SELECT')]; }
 
   private async withProductContext(message: string, context?: AssistantContextDto) { if (!context?.productSlug) return message; const product = await this.catalog.findBySlug(context.productSlug).catch(() => null); return product ? `Producto visible verificado: ${product.name}; tipo ${product.type}; precio ${product.price}; stock ${product.stock}.\nMensaje: ${message}` : message; }
-  private detectExplicitShoppingIntent(message: string): ShoppingIntent | undefined { const value = this.normalize(message); if (/(?:prefiero|quiero|mejor).*(?:pc|computador|equipo|uno).*(?:armad|listo|prearmad)|comprar\s+(?:un\s+)?(?:pc|computador|equipo)\s+listo/.test(value)) return ShoppingIntent.PREBUILT_PC; if (/mejorar|upgrade|actualizar\s+mi\s+(?:pc|computador|equipo)|tengo\s+(?:un\s+)?(?:ryzen|intel|rtx|gtx|rx)/.test(value)) return ShoppingIntent.UPGRADE_PC; if (/mejor\s+solo|buscar\s+(?:un\s+)?componente|(?:necesito|quiero)\s+(?:una\s+)?(?:gpu|grafica|cpu|procesador|ram|ssd|fuente)/.test(value)) return ShoppingIntent.COMPONENT; if (/armar(?:lo|la|me)?|armemos|por\s+(?:partes|componentes)|pieza\s+por\s+pieza|configuracion\s+personalizada/.test(value)) return ShoppingIntent.CUSTOM_PC; return undefined; }
-  private detectShoppingIntent(message: string): ShoppingIntent { const value = this.normalize(message); if (/mejor|upgrade|actualizar|tengo.*(?:ryzen|intel|rtx|gtx|rx)/.test(value)) return ShoppingIntent.UPGRADE_PC; if (/armar|personaliz|por partes|configur/.test(value)) return ShoppingIntent.CUSTOM_PC; if (/componente|gpu|tarjeta grafica|procesador|ram|ssd|fuente/.test(value)) return ShoppingIntent.COMPONENT; return ShoppingIntent.PREBUILT_PC; }
-  private detectComponentType(message: string, context?: AssistantContextDto): ProductType | undefined { const value = this.normalize(message); if (/gpu|grafica|video/.test(value)) return ProductType.GPU; if (/cpu|procesador/.test(value)) return ProductType.CPU; if (/ram|memoria/.test(value)) return ProductType.RAM; if (/ssd|disco|almacenamiento/.test(value)) return ProductType.STORAGE; if (/fuente|psu/.test(value)) return ProductType.PSU; if (/monitor/.test(value)) return ProductType.MONITOR; if (context?.selectedComponentType && Object.values(ProductType).includes(context.selectedComponentType as ProductType)) return context.selectedComponentType as ProductType; return undefined; }
+  private detectExplicitShoppingIntent(message: string): ShoppingIntent | undefined { const value = this.normalize(message); if (/(?:prefiero|quiero|mejor).*(?:pc|computador|equipo|uno).*(?:armad|listo|prearmad)|comprar\s+(?:un\s+)?(?:pc|computador|equipo)\s+listo/.test(value)) return ShoppingIntent.PREBUILT_PC; if (/mejorar|upgrade|actualizar\s+mi\s+(?:pc|computador|equipo)|tengo\s+(?:un\s+)?(?:ryzen|intel|rtx|gtx|rx)/.test(value)) return ShoppingIntent.UPGRADE_PC; if (/mejor\s+solo|buscar\s+(?:un\s+)?componente|(?:necesito|quiero)\s+(?:una\s+)?(?:gpu|grafica|cpu|procesador|ram|ssd|fuente|placa|board|motherboard|b[456]\d\d)/.test(value)) return ShoppingIntent.COMPONENT; if (/armar(?:lo|la|me)?|armemos|por\s+(?:partes|componentes)|pieza\s+por\s+pieza|configuracion\s+personalizada/.test(value)) return ShoppingIntent.CUSTOM_PC; return undefined; }
+  private detectShoppingIntent(message: string): ShoppingIntent | undefined { const value = this.normalize(message); if (/mejor|upgrade|actualizar|tengo.*(?:ryzen|intel|rtx|gtx|rx)/.test(value)) return ShoppingIntent.UPGRADE_PC; if (/armar|personaliz|por partes|configur/.test(value)) return ShoppingIntent.CUSTOM_PC; if (/componente|gpu|tarjeta grafica|procesador|ram|ssd|fuente|motherboard|placa|board|b[456]\d\d/.test(value)) return ShoppingIntent.COMPONENT; return undefined; }
+  private detectComponentType(message: string, context?: AssistantContextDto): ProductType | undefined { const value = this.normalize(message); if (/motherboard|placa\s+madre|placa|board|b[456]\d\d/.test(value)) return ProductType.MOTHERBOARD; if (/gpu|grafica|video/.test(value)) return ProductType.GPU; if (/cpu|procesador/.test(value)) return ProductType.CPU; if (/ram|memoria/.test(value)) return ProductType.RAM; if (/ssd|disco|almacenamiento/.test(value)) return ProductType.STORAGE; if (/fuente|psu/.test(value)) return ProductType.PSU; if (/monitor/.test(value)) return ProductType.MONITOR; if (context?.selectedComponentType && Object.values(ProductType).includes(context.selectedComponentType as ProductType)) return context.selectedComponentType as ProductType; return undefined; }
   private extractCurrentPc(message: string) { const normalized = this.normalize(message); const labeled = (label: string) => message.match(new RegExp(`(?:^|\\n)\\s*(?:${label})\\s*:\\s*([^\\n]+)`, 'i'))?.[1]?.trim(); const ram = labeled('RAM')?.match(/(\d+)/)?.[1] ?? normalized.match(/(\d+)\s*gb(?:\s*(?:de\s*)?(?:ram|memoria))?/)?.[1]; const psu = normalized.match(/(?:fuente|psu)[^\d]{0,20}(\d{3,4})\s*w/)?.[1]; return { cpu: labeled('CPU') ?? message.match(/(?:amd\s+)?ryzen\s+(?:[3579]\s+)?\d{4}\w*|intel(?:\(r\))?\s+(?:core\s+)?(?:i[3579][ -]?)?\d{4,5}\w*/i)?.[0]?.trim() ?? null, gpu: labeled('GPU') ?? message.match(/(?:nvidia\s+geforce\s+|geforce\s+)?(?:rtx|gtx)\s*\d{3,4}(?:\s*(?:ti|super))?|(?:amd\s+radeon\s+|radeon\s+)?rx\s*\d{3,4}(?:\s*xt)?/i)?.[0]?.trim() ?? null, ramGb: ram ? Number(ram) : null, motherboard: labeled('Motherboard|Board|Placa') ?? null, storage: labeled('Storage|Almacenamiento|Disco') ?? null, psuW: psu ? Number(psu) : null }; }
   private extractUpgradeGoal(message: string) { const normalized = this.normalize(message); if (!/(jugar|fps|render|editar|blender|premiere|docker|virtual|multitarea|lento|tiron|espacio|1440|stream)/.test(normalized)) return undefined; return message.trim().slice(0, 160); }
   private mergeCurrentPc(previous: AssistantContextDto['currentPc'], next: ReturnType<AssistantService['extractCurrentPc']>) { return { cpu: next.cpu ?? previous?.cpu ?? null, gpu: next.gpu ?? previous?.gpu ?? null, ramGb: next.ramGb ?? previous?.ramGb ?? null, motherboard: next.motherboard ?? previous?.motherboard ?? null, storage: next.storage ?? previous?.storage ?? null, psuW: next.psuW ?? previous?.psuW ?? null }; }
-  private extractBudget(message: string) { const million = this.normalize(message).match(/(\d+(?:[.,]\d+)?)\s*(?:millones?|m)\b/); if (million) return Math.round(Number(million[1].replace(',', '.')) * 1_000_000); const explicit = message.match(/(?:\$|cop\s*)?([\d.]{6,})/i)?.[1]; return explicit ? Number(explicit.replace(/[.,]/g, '')) : undefined; }
+  private extractBudget(message: string) { const normalized = this.normalize(message); const million = normalized.match(/(\d+(?:[.,]\d+)?)\s*(?:millones?|m)\b/); if (million) return Math.round(Number(million[1].replace(',', '.')) * 1_000_000); const thousand = normalized.match(/(\d+(?:[.,]\d+)?)\s*mil\b/); if (thousand) return Math.round(Number(thousand[1].replace(',', '.')) * 1_000); const explicit = message.match(/(?:\$|cop\s*)?([\d.]{6,})/i)?.[1]; return explicit ? Number(explicit.replace(/[.,]/g, '')) : undefined; }
   private normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
 
   async compare(input: CompareRequestDto) { const result = await this.recommendations.recommend(input.filters); const selected = result.recommendations.filter((item) => input.slugs.includes(item.product.slug)); if (selected.length < 2) throw new BadRequestException('Selecciona al menos dos recomendaciones vigentes para comparar'); return { message: await this.ai.explainComparison(input.question, selected), recommendations: selected }; }

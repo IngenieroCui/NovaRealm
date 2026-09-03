@@ -5,12 +5,16 @@ import { Product, ProductType } from '../catalog/product.types';
 import { AutoBuildRequestDto, BuilderActionDto, BuilderRequestDto, ComponentRecommendationRequestDto, UpgradePcDto } from './builder.dto';
 import { WorkloadsService } from '../workloads/workloads.service';
 import { Workload } from '../workloads/workload.types';
-import { WorkloadPreferenceDto } from '../recommendations/recommendation.dto';
+import { RecommendationPreferencesDto, WorkloadPreferenceDto } from '../recommendations/recommendation.dto';
 import { CompatibilityIssue, CompatibilityService, CompatibilityStatus } from './compatibility.service';
 
 export type CompatibilitySeverity = 'INFO' | 'WARNING' | 'ERROR';
 export type { CompatibilityIssue } from './compatibility.service';
 export type RecommendationRole = 'RECOMMENDED' | 'BEST_VALUE' | 'BUDGET' | 'PREMIUM';
+export interface CandidateRationale {
+  reasons: string[];
+  tradeoffs: string[];
+}
 export type ComponentCandidate = Product & {
   compatibility: CompatibilityStatus;
   compatibilityReasons: string[];
@@ -19,17 +23,22 @@ export type ComponentCandidate = Product & {
   recommendedRole?: RecommendationRole;
   strengths: string[];
   weaknesses: string[];
+  rationale: CandidateRationale;
 };
 
-const COMPONENT_TYPES = [ProductType.CPU, ProductType.MOTHERBOARD, ProductType.RAM, ProductType.GPU, ProductType.STORAGE, ProductType.PSU, ProductType.COOLING, ProductType.CASE];
+const CORE_COMPONENT_TYPES = [ProductType.CPU, ProductType.MOTHERBOARD, ProductType.RAM];
+const OPTIONAL_COMPONENT_TYPES = [ProductType.GPU];
+const TRAILING_COMPONENT_TYPES = [ProductType.STORAGE, ProductType.PSU, ProductType.COOLING, ProductType.CASE];
+const COMPONENT_TYPES = [...CORE_COMPONENT_TYPES, ...OPTIONAL_COMPONENT_TYPES, ...TRAILING_COMPONENT_TYPES];
 const PERIPHERAL_TYPES = [ProductType.MONITOR, ProductType.KEYBOARD, ProductType.MOUSE, ProductType.HEADSET];
-const GUIDED_STEPS = [...COMPONENT_TYPES];
 
 export type BuilderMode = 'GUIDED' | 'AUTO';
 export interface BuilderFlow {
   mode: BuilderMode;
   currentStep: ProductType | 'PERIPHERALS' | 'ASSEMBLY' | 'DONE';
   currentStepLabel: string;
+  previousStep?: ProductType;
+  editingStep?: ProductType;
   completedSteps: ProductType[];
   progress: number;
   totalSteps: number;
@@ -60,39 +69,60 @@ export class BuilderService {
     const selected = await this.products(input.itemSlugs);
     const selectedSlugs = new Set(selected.map((item) => item.slug));
     const workloadEntities = await this.loadWorkloads(input.workloads);
+    const minimumGpuPrice = input.componentType === ProductType.CPU && !this.workloadRequiresDiscreteGpu(workloadEntities) ? await this.minimumDiscreteGpuPrice() : 0;
+    const valueScore = (product: Product) => input.componentType === ProductType.CPU && minimumGpuPrice > 0
+      ? (this.componentScore(product, input.componentType, workloadEntities, selected, input.preferences) * 1_000_000) / Math.max(this.cpuEffectivePrice(product, minimumGpuPrice), 1)
+      : this.componentValueScore(product, input.componentType, workloadEntities, selected, input.preferences);
     const remainingBudget = input.budgetMax === undefined
       ? undefined
       : Math.max(0, input.budgetMax - this.subtotal(selected) - (input.assemblySelected ?? input.assembly ? await this.assemblyPrice() : 0));
-    const reserve = remainingBudget === undefined ? 0 : await this.minimumReserve(selected, input.componentType);
+    const reserve = remainingBudget === undefined ? 0 : await this.minimumReserve(selected, input.componentType, input.workloads);
     const candidateBudget = remainingBudget === undefined ? undefined : Math.max(0, remainingBudget - reserve);
     const candidates = (await this.catalog.findAll({ type: input.componentType, inStock: true }))
       .filter((product) => !selectedSlugs.has(product.slug))
       .filter((product) => candidateBudget === undefined || product.price <= candidateBudget);
     const evaluated = candidates.map((product) => {
       const result = this.compatibility.evaluate(product, selected);
+      const compatibility = this.componentCompatibility(product, input.componentType, selected, result);
       return {
         ...product,
-        ...result,
-        recommendationScore: Math.round(this.componentScore(product, input.componentType, workloadEntities)),
+        ...compatibility,
+        recommendationScore: Math.round(this.componentScore(product, input.componentType, workloadEntities, selected, input.preferences)),
         budgetImpact: remainingBudget === undefined ? product.price : Math.round((product.price / Math.max(remainingBudget, 1)) * 100),
         strengths: this.candidateStrengths(product, input.componentType, selected, workloadEntities),
         weaknesses: this.candidateWeaknesses(product, input.componentType, selected, workloadEntities),
+        rationale: { reasons: [], tradeoffs: [] },
       } as ComponentCandidate;
     });
-    const compatible = evaluated.filter((product) => product.compatibility === 'COMPATIBLE').sort((a, b) => {
-      if (input.preference === 'cheaper') return a.price - b.price || this.componentScore(b, input.componentType, workloadEntities) - this.componentScore(a, input.componentType, workloadEntities);
-      const scoreDifference = this.componentScore(b, input.componentType, workloadEntities) - this.componentScore(a, input.componentType, workloadEntities);
-      const valueDifference = this.componentValueScore(b, input.componentType, workloadEntities) - this.componentValueScore(a, input.componentType, workloadEntities);
+    const compatible = evaluated
+      .filter((product) => product.compatibility === 'COMPATIBLE')
+      .filter((product) => input.componentType !== ProductType.MOTHERBOARD || input.preferences?.wifiRequired !== true || product.technicalSpecs.wifi === true)
+      .sort((a, b) => {
+      if (input.preference === 'cheaper') return a.price - b.price || this.componentScore(b, input.componentType, workloadEntities, selected, input.preferences) - this.componentScore(a, input.componentType, workloadEntities, selected, input.preferences);
+      const scoreDifference = this.componentScore(b, input.componentType, workloadEntities, selected, input.preferences) - this.componentScore(a, input.componentType, workloadEntities, selected, input.preferences);
+      const valueDifference = valueScore(b) - valueScore(a);
       return input.preference === 'powerful' ? scoreDifference || valueDifference : valueDifference || scoreDifference;
-    });
-    const recommendations = this.assignRoles(compatible.slice(0, 5), input.preference);
+      });
+    const recommendations = this.assignRoles(compatible.slice(0, 8), input.componentType, workloadEntities, selected, input.preferences, input.preference, minimumGpuPrice);
     const unknownCount = evaluated.filter((item) => item.compatibility === 'UNKNOWN').length;
-    return { componentType: input.componentType, recommendations, warnings: recommendations.length ? [] : [unknownCount ? 'Hay opciones sin datos técnicos suficientes; se excluyeron hasta poder comprobarlas.' : 'No encontré opciones disponibles que cumplan el presupuesto y la compatibilidad.'] };
+    const wifiUnavailable = input.componentType === ProductType.MOTHERBOARD && input.preferences?.wifiRequired === true && !compatible.length;
+    return { componentType: input.componentType, recommendations, warnings: recommendations.length ? [] : [wifiUnavailable ? 'No encontré una motherboard compatible con Wi-Fi integrado en el catálogo actual.' : unknownCount ? 'Hay opciones sin datos técnicos suficientes; se excluyeron hasta poder comprobarlas.' : 'No encontré opciones disponibles que cumplan el presupuesto y la compatibilidad.'] };
   }
 
-  async recommendPeripherals(budgetMax?: number, minimumRefreshHz?: number) {
-    const products = await this.catalog.findAll({ types: PERIPHERAL_TYPES, inStock: true });
-    return products.filter((product) => !budgetMax || product.price <= budgetMax).filter((product) => !minimumRefreshHz || product.type !== ProductType.MONITOR || Number(product.technicalSpecs.refreshHz ?? 0) >= minimumRefreshHz).sort((a, b) => a.price - b.price).slice(0, 8);
+  async recommendPeripherals(types: ProductType[], budgetMax?: number, resolution?: string, minimumRefreshHz?: number) {
+    const products = await this.catalog.findAll({ types, inStock: true });
+    return products
+      .filter((product) => !budgetMax || product.price <= budgetMax)
+      .sort((a, b) => {
+        if (a.type === ProductType.MONITOR && b.type === ProductType.MONITOR) {
+          const exactA = resolution && String(a.technicalSpecs.resolution ?? '').toLowerCase() === resolution.toLowerCase() ? 1 : 0;
+          const exactB = resolution && String(b.technicalSpecs.resolution ?? '').toLowerCase() === resolution.toLowerCase() ? 1 : 0;
+          const refreshA = minimumRefreshHz && Number(a.technicalSpecs.refreshHz ?? 0) >= minimumRefreshHz ? 1 : 0;
+          const refreshB = minimumRefreshHz && Number(b.technicalSpecs.refreshHz ?? 0) >= minimumRefreshHz ? 1 : 0;
+          return exactB - exactA || refreshB - refreshA || a.price - b.price;
+        }
+        return a.price - b.price;
+      });
   }
 
   async summarize(input: BuilderRequestDto) {
@@ -103,11 +133,17 @@ export class BuilderService {
     const subtotal = products.reduce((total, product) => total + product.price, 0);
     const assemblySelected = input.assemblySelected ?? input.assembly ?? false;
     const assembly = assemblySelected && settings.assemblyEnabled ? settings.assemblyPrice : 0;
-    const compatibilityIssues = this.compatibility.issues(components, input.complete ?? false);
-    compatibilityIssues.push(...await this.balanceWarnings(components, input.workloads, input.budgetMax, subtotal + assembly));
+    const guidedSteps = await this.resolveGuidedSteps(components, input.workloads);
+    const compatibilityIssues = this.compatibility.issues(components, false);
+    if (input.complete) {
+      for (const type of guidedSteps) {
+        if (!components.some((product) => product.type === type)) compatibilityIssues.push({ code: `MISSING_${type}`, severity: 'ERROR', message: `Falta seleccionar ${type.toLowerCase()} para completar la build.` });
+      }
+    }
+    compatibilityIssues.push(...await this.balanceWarnings(components, input.workloads, input.preferences, input.budgetMax, subtotal + assembly));
     const warnings = compatibilityIssues.map((issue) => issue.message);
     if (input.budgetMax && subtotal + assembly > input.budgetMax) warnings.push(`La configuración supera el presupuesto en ${subtotal + assembly - input.budgetMax} COP.`);
-    const complete = COMPONENT_TYPES.every((type) => components.some((product) => product.type === type));
+    const complete = guidedSteps.every((type) => components.some((product) => product.type === type));
     const hasErrors = compatibilityIssues.some((issue) => issue.severity === 'ERROR');
     const hasUnknown = compatibilityIssues.some((issue) => issue.severity === 'WARNING' && /^(CPU_SOCKET|RAM_TYPE|PSU_POWER|CASE_FORM_FACTOR|COOLING_)/.test(issue.code));
     return { products, components, peripherals, subtotal, assembly, total: subtotal + assembly, budgetRemaining: input.budgetMax ? input.budgetMax - subtotal - assembly : null, assemblyEnabled: settings.assemblyEnabled, warnings, compatibilityIssues, compatibility: hasErrors ? 'INCOMPATIBLE' : hasUnknown ? 'UNKNOWN' : 'COMPATIBLE', complete, compatible: !hasErrors && !hasUnknown };
@@ -120,15 +156,15 @@ export class BuilderService {
     const settings = await this.settings();
     const assemblyCost = assembly && settings.assemblyEnabled ? settings.assemblyPrice : 0;
     const componentBudget = input.budgetMax - assemblyCost;
-    const cheapest = this.findCheapestBuild(products, workloadEntities);
+    const cheapest = await this.findCheapestBuild(products, workloadEntities, input.preferences);
     if (!cheapest || this.subtotal(cheapest) > componentBudget) {
-      const summary = await this.summarize({ itemSlugs: [], budgetMax: input.budgetMax, assemblySelected: assembly, complete: true, workloads: input.workloadSlugs?.map((slug) => ({ slug, importance: 1 })) });
+      const summary = await this.summarize({ itemSlugs: [], budgetMax: input.budgetMax, assemblySelected: assembly, complete: true, workloads: input.workloadSlugs?.map((slug) => ({ slug, importance: 1 })), preferences: input.preferences });
       return { ...summary, warnings: [...summary.warnings, 'No puedo completar una configuración razonable dentro de ese presupuesto con el catálogo actual.'] };
     }
     const targetBudget = Math.max(this.subtotal(cheapest), Math.floor(componentBudget * 0.95));
     const selected = await this.upgradeBuild(cheapest, products, targetBudget, workloadEntities);
     const slugs = selected.map((product) => product.slug);
-    return this.summarize({ itemSlugs: slugs, budgetMax: input.budgetMax, assemblySelected: assembly, complete: true, workloads: input.workloadSlugs?.map((slug) => ({ slug, importance: 1 })) });
+    return this.summarize({ itemSlugs: slugs, budgetMax: input.budgetMax, assemblySelected: assembly, complete: true, workloads: input.workloadSlugs?.map((slug) => ({ slug, importance: 1 })), preferences: input.preferences });
   }
 
   async applyAction(input: BuilderActionDto) {
@@ -136,18 +172,35 @@ export class BuilderService {
     const assemblySelected = input.assemblySelected ?? input.assembly ?? false;
     let target = input.productSlug ? await this.catalog.findBySlug(input.productSlug) : input.productId ? await this.catalog.findAll({ inStock: true }).then((items) => items.find((item) => item.id === input.productId)) : undefined;
     if (input.action === 'START_GUIDED') {
-      const summary = await this.summarize({ itemSlugs: current, budgetMax: input.budgetMax, assemblySelected, workloads: input.workloads });
-      return { action: input.action, product: null, summary, flow: await this.flow(current, 'GUIDED'), recommendations: await this.nextRecommendations(current, input.budgetMax, input.workloads, assemblySelected) };
+      const summary = await this.summarize({ itemSlugs: current, budgetMax: input.budgetMax, assemblySelected, workloads: input.workloads, preferences: input.preferences });
+      return { action: input.action, product: null, summary, flow: await this.flow(current, 'GUIDED', input.workloads), recommendations: await this.nextRecommendations(current, input.budgetMax, input.workloads, assemblySelected, input.preferences) };
     }
     if (input.action === 'AUTO_BUILD') {
-      const summary = await this.autoBuild({ budgetMax: input.budgetMax ?? 500000, workloadSlugs: input.workloads?.map((workload) => workload.slug), assembly: assemblySelected });
-      return { action: input.action, product: null, summary, flow: await this.flow(summary.products.map((item) => item.slug), 'AUTO'), recommendations: [] };
+      const summary = await this.autoBuild({ budgetMax: input.budgetMax ?? 500000, workloadSlugs: input.workloads?.map((workload) => workload.slug), assembly: assemblySelected, preferences: input.preferences });
+      return { action: input.action, product: null, summary, flow: await this.flow(summary.products.map((item) => item.slug), 'AUTO', input.workloads), recommendations: [] };
+    }
+    if (input.action === 'GO_TO_STEP') {
+      if (!input.componentType || !COMPONENT_TYPES.includes(input.componentType)) throw new BadRequestException('GO_TO_STEP requiere un tipo de componente válido.');
+      const resolvedSteps = await this.resolveGuidedSteps(await this.products(current), input.workloads);
+      if (!resolvedSteps.includes(input.componentType)) throw new BadRequestException('Ese componente no forma parte de los pasos resueltos para esta configuración.');
+      const summary = await this.summarize({ itemSlugs: current, budgetMax: input.budgetMax, assemblySelected, workloads: input.workloads, preferences: input.preferences });
+      const flow = await this.flow(current, input.mode ?? 'GUIDED', input.workloads, input.componentType);
+      const recommendations = await this.recommendComponents({ componentType: input.componentType, itemSlugs: current, budgetMax: input.budgetMax, workloads: input.workloads, preferences: input.preferences, assemblySelected });
+      return { action: input.action, product: null, summary, flow, recommendations: recommendations.recommendations };
+    }
+    if (input.action === 'RETURN_TO_CURRENT_STEP') {
+      const summary = await this.summarize({ itemSlugs: current, budgetMax: input.budgetMax, assemblySelected, workloads: input.workloads, preferences: input.preferences });
+      const flow = await this.flow(current, input.mode ?? 'GUIDED', input.workloads);
+      const recommendations = flow.currentStep !== 'DONE' && COMPONENT_TYPES.includes(flow.currentStep as ProductType)
+        ? await this.recommendComponents({ componentType: flow.currentStep as ProductType, itemSlugs: current, budgetMax: input.budgetMax, workloads: input.workloads, preferences: input.preferences, assemblySelected })
+        : undefined;
+      return { action: input.action, summary, flow, recommendations: recommendations?.recommendations ?? [] };
     }
     let effectiveAction = input.action;
     if (input.action === 'AUTO_SELECT') {
-      const currentStep = (await this.flow(current, 'GUIDED')).currentStep;
-      if (!GUIDED_STEPS.includes(currentStep as ProductType)) throw new BadRequestException('La configuración ya no tiene un componente pendiente.');
-      const result = await this.recommendComponents({ componentType: currentStep as ProductType, itemSlugs: current, budgetMax: input.budgetMax, assemblySelected, workloads: input.workloads, preference: 'powerful' });
+      const currentStep = (await this.flow(current, 'GUIDED', input.workloads)).currentStep;
+      if (!COMPONENT_TYPES.includes(currentStep as ProductType)) throw new BadRequestException('La configuración ya no tiene un componente pendiente.');
+      const result = await this.recommendComponents({ componentType: currentStep as ProductType, itemSlugs: current, budgetMax: input.budgetMax, assemblySelected, workloads: input.workloads, preferences: input.preferences, preference: input.preference });
       target = result.recommendations.find((item) => item.recommendedRole === 'RECOMMENDED') ?? result.recommendations[0];
       effectiveAction = 'ADD_TO_BUILD';
     }
@@ -158,41 +211,70 @@ export class BuilderService {
       if (target!.stock <= 0 || !target!.active) throw new BadRequestException('Ese producto no está disponible.');
       slugs = slugs.filter((slug) => slug !== target!.slug);
       const existing = await this.products(slugs);
-      slugs = slugs.filter((slug) => !existing.some((item) => item.type === target!.type));
+      slugs = slugs.filter((slug) => !existing.some((item) => item.slug === slug && item.type === target!.type));
       slugs.push(target!.slug);
     }
     if (effectiveAction === 'REMOVE_FROM_BUILD' || effectiveAction === 'REMOVE_PERIPHERAL') slugs = target ? slugs.filter((slug) => slug !== target.slug) : slugs;
     const nextAssembly = effectiveAction === 'ADD_ASSEMBLY' ? true : effectiveAction === 'REMOVE_ASSEMBLY' ? false : assemblySelected;
-    const summary = await this.summarize({ itemSlugs: slugs, budgetMax: input.budgetMax, assemblySelected: nextAssembly, workloads: input.workloads });
+    const summary = await this.summarize({ itemSlugs: slugs, budgetMax: input.budgetMax, assemblySelected: nextAssembly, workloads: input.workloads, preferences: input.preferences });
     if (summary.compatibilityIssues.some((issue) => issue.severity === 'ERROR' && !issue.code.startsWith('OUT_OF_STOCK'))) {
-      throw new ConflictException('La pieza elegida no es compatible con la configuración actual.');
+      throw new ConflictException({ message: 'La pieza elegida no es compatible con la configuración actual.', compatibilityIssues: summary.compatibilityIssues, currentSlugs: current });
     }
     if (input.budgetMax !== undefined && summary.total > input.budgetMax) {
       throw new BadRequestException('La pieza elegida supera el presupuesto disponible.');
     }
-    return { action: input.action, product: target ?? null, summary, flow: await this.flow(slugs, input.mode ?? 'GUIDED'), recommendations: await this.nextRecommendations(slugs, input.budgetMax, input.workloads, nextAssembly) };
+    return { action: input.action, product: target ?? null, summary, flow: await this.flow(slugs, input.mode ?? 'GUIDED', input.workloads), recommendations: await this.nextRecommendations(slugs, input.budgetMax, input.workloads, nextAssembly, input.preferences) };
   }
 
-  private async nextRecommendations(slugs: string[], budgetMax?: number, workloads?: WorkloadPreferenceDto[], assemblySelected = false) {
-    const step = (await this.flow(slugs, 'GUIDED')).currentStep;
-    if (!GUIDED_STEPS.includes(step as ProductType)) return [];
-    return (await this.recommendComponents({ componentType: step as ProductType, itemSlugs: slugs, budgetMax, workloads, assemblySelected })).recommendations;
+  private async nextRecommendations(slugs: string[], budgetMax?: number, workloads?: WorkloadPreferenceDto[], assemblySelected = false, preferences?: RecommendationPreferencesDto, requestedStep?: ProductType) {
+    const step = requestedStep ?? (await this.flow(slugs, 'GUIDED', workloads)).currentStep;
+    if (!COMPONENT_TYPES.includes(step as ProductType)) return [];
+    return (await this.recommendComponents({ componentType: step as ProductType, itemSlugs: slugs, budgetMax, workloads, preferences, assemblySelected })).recommendations;
   }
 
-  async flow(slugs: string[], mode: BuilderMode = 'GUIDED'): Promise<BuilderFlow> {
+  async flow(slugs: string[], mode: BuilderMode = 'GUIDED', workloads?: WorkloadPreferenceDto[], editingStep?: ProductType): Promise<BuilderFlow> {
     const products = await this.products(slugs);
     const selectedTypes = new Set(products.map((product) => product.type));
-    const completed = GUIDED_STEPS.filter((type) => selectedTypes.has(type));
-    const current = GUIDED_STEPS.find((type) => !completed.includes(type)) ?? 'DONE';
-    const totalSteps = GUIDED_STEPS.length;
+    const resolvedSteps = await this.resolveGuidedSteps(products, workloads);
+    const completed = resolvedSteps.filter((type) => selectedTypes.has(type));
+    const current = editingStep ?? resolvedSteps.find((type) => !completed.includes(type)) ?? 'DONE';
+    const currentIndex = current === 'DONE' ? resolvedSteps.length : resolvedSteps.indexOf(current);
+    const previousStep = currentIndex > 0 ? resolvedSteps[currentIndex - 1] : undefined;
+    const totalSteps = resolvedSteps.length;
     return {
       mode,
       currentStep: current,
-      currentStepLabel: current === 'DONE' ? 'Configuración lista' : current === 'MOTHERBOARD' ? 'Motherboard' : current === 'RAM' ? 'Memoria RAM' : current === 'GPU' ? 'Tarjeta gráfica' : current === 'PSU' ? 'Fuente' : current === 'STORAGE' ? 'Almacenamiento' : current === 'COOLING' ? 'Refrigeración' : current === 'CASE' ? 'Chasis' : 'Procesador',
+      currentStepLabel: this.componentLabel(current),
+      ...(previousStep ? { previousStep } : {}),
+      ...(editingStep ? { editingStep } : {}),
       completedSteps: completed,
       progress: Math.round((completed.length / totalSteps) * 100),
       totalSteps,
     };
+  }
+
+  private async resolveGuidedSteps(selected: Product[], workloads?: WorkloadPreferenceDto[]): Promise<ProductType[]> {
+    const workloadEntities = await this.loadWorkloads(workloads);
+    const cpu = selected.find((product) => product.type === ProductType.CPU);
+    const gpu = selected.find((product) => product.type === ProductType.GPU);
+    const workloadRequiresGpu = this.workloadRequiresDiscreteGpu(workloadEntities);
+    const cpuRequiresGpu = Boolean(cpu && cpu.technicalSpecs.integratedGraphics !== true);
+    const gpuRequired = Boolean(gpu || workloadRequiresGpu || cpuRequiresGpu);
+    return [...CORE_COMPONENT_TYPES, ...(gpuRequired ? [ProductType.GPU] : []), ...TRAILING_COMPONENT_TYPES];
+  }
+
+  private componentLabel(type: BuilderFlow['currentStep']) {
+    if (type === 'DONE') return 'Configuración lista';
+    return ({
+      [ProductType.CPU]: 'Procesador',
+      [ProductType.MOTHERBOARD]: 'Motherboard',
+      [ProductType.RAM]: 'Memoria RAM',
+      [ProductType.GPU]: 'Tarjeta gráfica',
+      [ProductType.STORAGE]: 'Almacenamiento',
+      [ProductType.PSU]: 'Fuente',
+      [ProductType.COOLING]: 'Refrigeración',
+      [ProductType.CASE]: 'Chasis',
+    } as Record<ProductType, string>)[type as ProductType] ?? String(type);
   }
 
   private async loadWorkloads(preferences?: WorkloadPreferenceDto[]) {
@@ -200,6 +282,19 @@ export class BuilderService {
     const entities = await this.workloads.findBySlugs(preferences.map((item) => item.slug));
     const importance = new Map(preferences.map((item) => [item.slug, item.importance]));
     return entities.map((workload) => ({ workload, importance: importance.get(workload.slug) ?? 1 }));
+  }
+
+  private async minimumDiscreteGpuPrice(): Promise<number> {
+    const gpus = await this.catalog.findAll({ type: ProductType.GPU, inStock: true });
+    return gpus.filter((product) => product.active).sort((a, b) => a.price - b.price)[0]?.price ?? 0;
+  }
+
+  private workloadRequiresDiscreteGpu(workloads: Array<{ workload: Workload; importance: number }>): boolean {
+    return workloads.some(({ workload }) => workload.type === 'GAME' || workload.type === 'CREATIVE' || workload.type === 'AI' || workload.slug === 'unity' || workload.slug === 'unreal-engine');
+  }
+
+  private cpuEffectivePrice(product: Product, minimumGpuPrice: number): number {
+    return product.price + (product.technicalSpecs.integratedGraphics === true ? 0 : minimumGpuPrice);
   }
 
   private subtotal(products: Product[]) {
@@ -211,8 +306,9 @@ export class BuilderService {
     return settings.assemblyEnabled ? settings.assemblyPrice : 0;
   }
 
-  private async minimumReserve(selected: Product[], targetType: ProductType) {
-    const missingTypes = COMPONENT_TYPES.filter((type) => type !== targetType && !selected.some((product) => product.type === type));
+  private async minimumReserve(selected: Product[], targetType: ProductType, workloads?: WorkloadPreferenceDto[]) {
+    const guidedSteps = await this.resolveGuidedSteps(selected, workloads);
+    const missingTypes = guidedSteps.filter((type) => type !== targetType && !selected.some((product) => product.type === type));
     let reserve = 0;
     for (const type of missingTypes) {
       const candidates = await this.catalog.findAll({ type, inStock: true });
@@ -224,36 +320,45 @@ export class BuilderService {
     return reserve;
   }
 
-  private findCheapestBuild(products: Product[], workloads: Array<{ workload: Workload; importance: number }>) {
+  private async findCheapestBuild(products: Product[], workloads: Array<{ workload: Workload; importance: number }>, preferences?: RecommendationPreferencesDto) {
     const cheapest = (type: ProductType, predicate: (product: Product) => boolean = () => true) => products
       .filter((product) => product.type === type && predicate(product))
       .sort((a, b) => a.price - b.price)[0];
     const cpu = cheapest(ProductType.CPU);
-    const board = cpu ? cheapest(ProductType.MOTHERBOARD, (product) => this.isCompatible(product, [cpu])) : undefined;
-    const ram = board ? cheapest(ProductType.RAM, (product) => this.isCompatible(product, [cpu, board])) : undefined;
-    const gpu = cheapest(ProductType.GPU);
-    const storage = cheapest(ProductType.STORAGE);
-    const psu = cheapest(ProductType.PSU, (product) => this.isCompatible(product, [cpu, gpu]));
-    const cooling = cheapest(ProductType.COOLING);
-    const pcCase = cheapest(ProductType.CASE);
-    const build = [cpu, board, ram, gpu, storage, psu, cooling, pcCase].filter((product): product is Product => Boolean(product));
-    return build.length === COMPONENT_TYPES.length && this.isCompatible(build[0], build.slice(1)) && this.compatibilityIssues(build).every((issue) => issue.severity !== 'ERROR')
+    const board = cpu ? cheapest(ProductType.MOTHERBOARD, (product) => this.isUsable(product, [cpu])) : undefined;
+    const ram = board ? cheapest(ProductType.RAM, (product) => this.isUsable(product, [cpu, board])) : undefined;
+    const core = [cpu, board, ram].filter((product): product is Product => Boolean(product));
+    const guidedSteps = await this.resolveGuidedSteps(core, workloads.map(({ workload, importance }) => ({ slug: workload.slug, importance })));
+    const gpu = guidedSteps.includes(ProductType.GPU) ? cheapest(ProductType.GPU, (product) => this.isUsable(product, core)) : undefined;
+    const withGpu = [...core, ...(gpu ? [gpu] : [])];
+    const storage = cheapest(ProductType.STORAGE, (product) => this.isUsable(product, withGpu));
+    const psu = cheapest(ProductType.PSU, (product) => this.isUsable(product, withGpu) && this.psuScore(product, withGpu) > 0);
+    const cooling = cheapest(ProductType.COOLING, (product) => this.isUsable(product, withGpu));
+    const pcCase = cheapest(ProductType.CASE, (product) => this.isUsable(product, [...withGpu, ...(storage ? [storage] : []), ...(psu ? [psu] : []), ...(cooling ? [cooling] : [])]));
+    const selectedByType = new Map([cpu, board, ram, gpu, storage, psu, cooling, pcCase].filter((product): product is Product => Boolean(product)).map((product) => [product.type, product] as const));
+    const build = guidedSteps.map((type) => selectedByType.get(type)).filter((product): product is Product => Boolean(product));
+    return build.length === guidedSteps.length && guidedSteps.every((type) => build.some((product) => product.type === type)) && this.compatibilityIssues(build).every((issue) => issue.severity !== 'ERROR')
       ? build
-      : this.findCheapestCompatibleBuild(products);
+      : this.findCheapestCompatibleBuild(products, workloads);
   }
 
-  private findCheapestCompatibleBuild(products: Product[]) {
+  private async findCheapestCompatibleBuild(products: Product[], workloads: Array<{ workload: Workload; importance: number }>) {
     const sorted = (type: ProductType) => products.filter((product) => product.type === type).sort((a, b) => a.price - b.price);
     for (const cpu of sorted(ProductType.CPU)) {
-      for (const board of sorted(ProductType.MOTHERBOARD).filter((candidate) => this.isCompatible(candidate, [cpu]))) {
-        const ram = sorted(ProductType.RAM).find((candidate) => this.isCompatible(candidate, [cpu, board]));
-        const gpu = sorted(ProductType.GPU)[0];
-        const storage = sorted(ProductType.STORAGE)[0];
-        const psu = sorted(ProductType.PSU).find((candidate) => this.isCompatible(candidate, [cpu, gpu]));
-        const cooling = sorted(ProductType.COOLING)[0];
-        const pcCase = sorted(ProductType.CASE)[0];
-        const build = [cpu, board, ram, gpu, storage, psu, cooling, pcCase].filter((product): product is Product => Boolean(product));
-        if (build.length === COMPONENT_TYPES.length && this.compatibilityIssues(build).every((issue) => issue.severity !== 'ERROR')) return build;
+      for (const board of sorted(ProductType.MOTHERBOARD).filter((candidate) => this.isUsable(candidate, [cpu]))) {
+        const ram = sorted(ProductType.RAM).find((candidate) => this.isUsable(candidate, [cpu, board]));
+        if (!ram) continue;
+        const core = [cpu, board, ram];
+        const guidedSteps = await this.resolveGuidedSteps(core, workloads.map(({ workload, importance }) => ({ slug: workload.slug, importance })));
+        const gpu = guidedSteps.includes(ProductType.GPU) ? sorted(ProductType.GPU).find((candidate) => this.isUsable(candidate, core)) : undefined;
+        const withGpu = [...core, ...(gpu ? [gpu] : [])];
+        const storage = sorted(ProductType.STORAGE).find((candidate) => this.isUsable(candidate, withGpu));
+        const psu = sorted(ProductType.PSU).find((candidate) => this.isUsable(candidate, withGpu) && this.psuScore(candidate, withGpu) > 0);
+        const cooling = sorted(ProductType.COOLING).find((candidate) => this.isUsable(candidate, withGpu));
+        const pcCase = sorted(ProductType.CASE).find((candidate) => this.isUsable(candidate, [...withGpu, ...(storage ? [storage] : []), ...(psu ? [psu] : []), ...(cooling ? [cooling] : [])]));
+        const selectedByType = new Map([cpu, board, ram, gpu, storage, psu, cooling, pcCase].filter((product): product is Product => Boolean(product)).map((product) => [product.type, product] as const));
+        const build = guidedSteps.map((type) => selectedByType.get(type)).filter((product): product is Product => Boolean(product));
+        if (build.length === guidedSteps.length && guidedSteps.every((type) => build.some((product) => product.type === type)) && this.compatibilityIssues(build).every((issue) => issue.severity !== 'ERROR')) return build;
       }
     }
     return undefined;
@@ -270,7 +375,7 @@ export class BuilderService {
         for (const candidate of products.filter((product) => product.type === type && product.slug !== current.slug && product.price > current.price)) {
           const next = selected.map((product) => product.type === type ? candidate : product);
           const cost = candidate.price - current.price;
-          const gain = this.componentScore(candidate, type, workloads) - this.componentScore(current, type, workloads);
+          const gain = this.componentScore(candidate, type, workloads, next) - this.componentScore(current, type, workloads, selected);
           if (gain <= 0 || currentTotal + cost > budget || !this.compatibilityIssues(next).every((issue) => issue.severity !== 'ERROR')) continue;
           if (!best || gain / cost > best.gain / best.cost) best = { type, product: candidate, gain, cost };
         }
@@ -397,6 +502,10 @@ export class BuilderService {
     return this.compatibility.evaluate(product, selected).compatibility === 'COMPATIBLE';
   }
 
+  private isUsable(product: Product, selected: Product[]) {
+    return this.compatibility.evaluate(product, selected).compatibility !== 'INCOMPATIBLE';
+  }
+
   private scoreForType(product: Product, type: ProductType) {
     if (type === ProductType.GPU) return product.gpuScore ?? 0;
     if (type === ProductType.CPU) return product.cpuScore ?? 0;
@@ -409,7 +518,8 @@ export class BuilderService {
     return 0;
   }
 
-  private componentScore(product: Product, type: ProductType, workloads: Array<{ workload: Workload; importance: number }>) {
+  private componentScore(product: Product, type: ProductType, workloads: Array<{ workload: Workload; importance: number }>, selected: Product[] = [], preferences?: RecommendationPreferencesDto) {
+    if (type === ProductType.PSU) return this.psuScore(product, selected);
     if (!workloads.length) return this.scoreForType(product, type);
     const scoreForWorkload = workloads.reduce((total, { workload, importance }) => {
       const value = type === ProductType.CPU
@@ -417,22 +527,55 @@ export class BuilderService {
         : type === ProductType.GPU
           ? this.ratio(product.gpuScore, workload.recommendedGpuScore)
           : type === ProductType.RAM
-            ? this.ratio(product.ramGb, workload.recommendedRamGb)
+            ? this.ramScore(product.ramGb, workload)
             : type === ProductType.STORAGE
               ? this.ratio(product.storageGb, 1000)
               : type === ProductType.MOTHERBOARD
-                ? 70
-                : type === ProductType.PSU
-                  ? this.ratio(Number(product.technicalSpecs.wattage ?? 0), 850)
-                  : 60;
+                ? preferences?.futureUpgrade ? product.upgradeabilityScore ?? 70 : 70
+                : 60;
       return total + value * importance;
     }, 0);
     const importanceTotal = workloads.reduce((total, item) => total + item.importance, 0);
     return scoreForWorkload / Math.max(importanceTotal, 1);
   }
 
-  private componentValueScore(product: Product, type: ProductType, workloads: Array<{ workload: Workload; importance: number }>) {
-    return (this.componentScore(product, type, workloads) * 1_000_000) / Math.max(product.price, 1);
+  private componentValueScore(product: Product, type: ProductType, workloads: Array<{ workload: Workload; importance: number }>, selected: Product[] = [], preferences?: RecommendationPreferencesDto) {
+    return (this.componentScore(product, type, workloads, selected, preferences) * 1_000_000) / Math.max(product.price, 1);
+  }
+
+  private ramScore(capacity: number | null | undefined, workload: Workload) {
+    const value = this.ratio(capacity, workload.recommendedRamGb);
+    const target = Math.max(workload.recommendedRamGb, workload.minimumRamGb);
+    const actual = capacity ?? 0;
+    const overspendPenalty = actual >= target * 4 ? 20 : actual >= target * 2 ? 10 : 0;
+    return Math.max(0, value - overspendPenalty);
+  }
+
+  private psuScore(product: Product, selected: Product[]) {
+    const wattage = Number(product.technicalSpecs.wattage ?? 0);
+    const required = this.requiredPsuWatts(selected);
+    if (!wattage || wattage < required) return 0;
+    const delta = wattage - required;
+    if (delta <= 150) return Math.max(90, 100 - Math.round(Math.abs(delta - 75) / 15));
+    if (delta <= 300) return Math.max(70, 88 - Math.round((delta - 150) / 15));
+    return Math.max(20, 65 - Math.round((delta - 300) / 10));
+  }
+
+  private requiredPsuWatts(selected: Product[]) {
+    const gpu = selected.find((item) => item.type === ProductType.GPU);
+    return gpu ? Number(gpu.technicalSpecs.recommendedPsuWatts ?? 0) || 450 : 450;
+  }
+
+  private componentCompatibility(product: Product, type: ProductType, selected: Product[], result: { compatibility: CompatibilityStatus; compatibilityReasons: string[] }) {
+    if (type !== ProductType.PSU) return result;
+    const score = this.psuScore(product, selected);
+    if (score > 0) return result;
+    const gpu = selected.find((item) => item.type === ProductType.GPU);
+    const required = gpu ? Number(gpu.technicalSpecs.recommendedPsuWatts ?? 0) || 450 : 450;
+    return {
+      compatibility: 'INCOMPATIBLE' as const,
+      compatibilityReasons: [...result.compatibilityReasons, `La fuente debe ofrecer al menos ${required} W para esta configuración.`],
+    };
   }
 
   private ratio(value: number | null | undefined, recommended: number) {
@@ -441,15 +584,88 @@ export class BuilderService {
 
   private compatibilityIssues(products: Product[], requireComplete = false): CompatibilityIssue[] { return this.compatibility.issues(products, requireComplete); }
 
-  private assignRoles(candidates: ComponentCandidate[], preference?: 'cheaper' | 'powerful') {
+  private assignRoles(
+    candidates: ComponentCandidate[],
+    componentType: ProductType,
+    workloads: Array<{ workload: Workload; importance: number }>,
+    selectedProducts: Product[],
+    preferences?: RecommendationPreferencesDto,
+    preference?: 'cheaper' | 'powerful',
+    minimumGpuPrice = 0,
+  ) {
     if (!candidates.length) return candidates;
-    const cheapest = [...candidates].sort((a, b) => a.price - b.price)[0];
-    const bestValue = [...candidates].sort((a, b) => this.componentValueScore(b, b.type, []) - this.componentValueScore(a, a.type, []))[0];
-    const recommended = preference === 'cheaper' ? cheapest : preference === 'powerful' ? candidates[0] : bestValue;
-    return candidates.map((candidate) => ({
-      ...candidate,
-      recommendedRole: candidate.slug === recommended.slug ? 'RECOMMENDED' as const : candidate.slug === cheapest.slug ? 'BUDGET' as const : candidate.slug === bestValue.slug ? 'BEST_VALUE' as const : undefined,
-    }));
+    const score = (candidate: ComponentCandidate) => this.componentScore(candidate, componentType, workloads, selectedProducts, preferences);
+    const value = (candidate: ComponentCandidate) => componentType === ProductType.CPU && minimumGpuPrice > 0
+      ? (this.componentScore(candidate, componentType, workloads, selectedProducts, preferences) * 1_000_000) / Math.max(this.cpuEffectivePrice(candidate, minimumGpuPrice), 1)
+      : this.componentValueScore(candidate, componentType, workloads, selectedProducts, preferences);
+    const cheapest = [...candidates].sort((a, b) => a.price - b.price || score(b) - score(a))[0];
+    const valueCandidates = candidates.filter((candidate) => !this.isNormalOfficeRamOverspend(candidate, componentType, workloads) || candidates.every((item) => this.isNormalOfficeRamOverspend(item, componentType, workloads)));
+    const bestValue = [...valueCandidates].sort((a, b) => value(b) - value(a) || score(b) - score(a) || a.price - b.price)[0] ?? candidates[0];
+    const strongest = [...candidates].sort((a, b) => score(b) - score(a) || value(b) - value(a) || a.price - b.price)[0];
+    const recommended = preference === 'cheaper'
+      ? cheapest
+      : preference === 'powerful'
+        ? strongest
+        : preferences?.valuePriority
+          ? bestValue
+          : strongest;
+    const roles = new Map<string, RecommendationRole>();
+    roles.set(recommended.slug, 'RECOMMENDED');
+    const setDistinct = (candidate: ComponentCandidate | undefined, role: RecommendationRole) => {
+      if (candidate && !roles.has(candidate.slug)) roles.set(candidate.slug, role);
+    };
+    setDistinct([...candidates].sort((a, b) => value(b) - value(a) || score(b) - score(a) || a.price - b.price).find((candidate) => score(candidate) >= 60) ?? bestValue, 'BEST_VALUE');
+    setDistinct(cheapest, 'BUDGET');
+    const premium = [...candidates]
+      .sort((a, b) => score(b) - score(a) || (b.upgradeabilityScore ?? 0) - (a.upgradeabilityScore ?? 0))
+      .find((candidate) => candidate.slug !== recommended.slug && (score(candidate) >= score(recommended) + 8 || (candidate.upgradeabilityScore ?? 0) >= (recommended.upgradeabilityScore ?? 0) + 12));
+    setDistinct(premium, 'PREMIUM');
+    return candidates.map((candidate) => {
+      const recommendedRole = roles.get(candidate.slug);
+      const rationale = this.candidateRationale(candidate, componentType, workloads, selectedProducts, preferences, recommendedRole);
+      return {
+        ...candidate,
+        ...(recommendedRole ? { recommendedRole } : {}),
+        rationale,
+        strengths: [...new Set([...candidate.strengths, ...rationale.reasons])].slice(0, 3),
+        weaknesses: [...new Set([...candidate.weaknesses, ...rationale.tradeoffs])].slice(0, 2),
+      };
+    });
+  }
+
+  private isNormalOfficeRamOverspend(candidate: Product, type: ProductType, workloads: Array<{ workload: Workload; importance: number }>) {
+    if (type !== ProductType.RAM || !workloads.length) return false;
+    if (!workloads.every(({ workload }) => workload.type === 'PROFESSIONAL' && workload.recommendedRamGb <= 16)) return false;
+    const target = Math.max(...workloads.map(({ workload }) => workload.recommendedRamGb));
+    return (candidate.ramGb ?? 0) >= target * 4;
+  }
+
+  private candidateRationale(candidate: ComponentCandidate, type: ProductType, workloads: Array<{ workload: Workload; importance: number }>, selectedProducts: Product[], preferences?: RecommendationPreferencesDto, role?: RecommendationRole): CandidateRationale {
+    const reasons: string[] = ['Es compatible con los componentes seleccionados.'];
+    const tradeoffs: string[] = [];
+    const recommendedRam = Math.max(0, ...workloads.map(({ workload }) => workload.recommendedRamGb));
+    const workloadNames = workloads.some(({ workload }) => workload.slug === 'ofimatica-basica') ? 'ofimática' : workloads.map(({ workload }) => workload.name.toLowerCase()).join(', ');
+    if (type === ProductType.RAM && recommendedRam) {
+      const capacity = candidate.ramGb ?? 0;
+      if (capacity === recommendedRam) reasons.push(`Cumple los ${recommendedRam} GB recomendados para ${workloadNames || 'el uso indicado'}.`);
+      else if (capacity < recommendedRam) tradeoffs.push(`Queda por debajo de los ${recommendedRam} GB recomendados para ${workloadNames || 'estos usos'}.`);
+      else if (capacity >= recommendedRam * 2 && workloads.every(({ workload }) => workload.type === 'PROFESSIONAL' && workload.recommendedRamGb <= 16)) tradeoffs.push(`Más caro sin mejora importante para ${workloadNames || 'ofimática'}.`);
+      else reasons.push(`Aporta ${capacity} GB para multitarea y cargas simultáneas.`);
+    }
+    if (type === ProductType.MOTHERBOARD && preferences?.wifiRequired) {
+      reasons.push('Tiene Wi-Fi integrado, requisito indicado por el usuario.');
+    }
+    if (type === ProductType.PSU) {
+      const required = this.requiredPsuWatts(selectedProducts);
+      if (candidate.technicalSpecs.wattage && Number(candidate.technicalSpecs.wattage) <= required + 150) reasons.push(`Está dentro del rango de ${required} a ${required + 150} W recomendado para esta configuración.`);
+      if (Number(candidate.technicalSpecs.wattage ?? 0) > required + 300) tradeoffs.push('Tiene mucha más potencia de la necesaria para esta configuración.');
+    }
+    if (role === 'BEST_VALUE') reasons.push('Es la opción más económica que alcanza el objetivo actual.');
+    if (role === 'BUDGET') reasons.push('Es la alternativa de menor precio que conserva compatibilidad.');
+    if (role === 'PREMIUM') reasons.push('Ofrece margen adicional de capacidad o actualización que sí puede aprovecharse.');
+    if (preferences?.futureUpgrade && (candidate.upgradeabilityScore ?? 0) >= 75) reasons.push('Ofrece más margen de actualización.');
+    if (!tradeoffs.length && role === 'PREMIUM') tradeoffs.push('Requiere más presupuesto para aprovechar su capacidad adicional.');
+    return { reasons: [...new Set(reasons)].slice(0, 4), tradeoffs: [...new Set(tradeoffs)].slice(0, 3) };
   }
 
   private candidateStrengths(product: Product, type: ProductType, selected: Product[], workloads: Array<{ workload: Workload; importance: number }>) {
@@ -466,7 +682,7 @@ export class BuilderService {
     return weaknesses;
   }
 
-  private async balanceWarnings(products: Product[], preferences?: WorkloadPreferenceDto[], budgetMax?: number, currentTotal = 0): Promise<CompatibilityIssue[]> {
+  private async balanceWarnings(products: Product[], workloadsInput?: WorkloadPreferenceDto[], preferences?: RecommendationPreferencesDto, budgetMax?: number, currentTotal = 0): Promise<CompatibilityIssue[]> {
     const issues: CompatibilityIssue[] = [];
     const cpu = products.find((item) => item.type === ProductType.CPU);
     const gpu = products.find((item) => item.type === ProductType.GPU);
@@ -474,12 +690,14 @@ export class BuilderService {
     const psu = products.find((item) => item.type === ProductType.PSU);
     const cooling = products.find((item) => item.type === ProductType.COOLING);
     const pcCase = products.find((item) => item.type === ProductType.CASE);
-    const workloads = await this.loadWorkloads(preferences);
+    const workloads = await this.loadWorkloads(workloadsInput);
     const recommendedRam = Math.max(0, ...workloads.map(({ workload }) => workload.recommendedRamGb));
     if (ram && recommendedRam && (ram.ramGb ?? 0) < recommendedRam) issues.push({ code: 'BALANCE_WARNING_RAM', severity: 'WARNING', message: `${ram.ramGb ?? 0} GB funcionan, pero tus usos recomiendan ${recommendedRam} GB para trabajar con margen.` });
+    if (ram && recommendedRam && (ram.ramGb ?? 0) >= recommendedRam * 4 && workloads.every(({ workload }) => workload.type === 'PROFESSIONAL' && workload.recommendedRamGb <= 16)) issues.push({ code: 'BALANCE_WARNING_RAM_OVERSPEND', severity: 'WARNING', message: `${ram.ramGb ?? 0} GB superan ampliamente lo esperado para tus usos actuales; podrías invertir esa diferencia en una pieza que sí cambie el rendimiento.` });
     if (cpu && gpu && (cpu.cpuScore ?? 0) - (gpu.gpuScore ?? 0) >= 12 && (budgetMax ?? 0) - currentTotal > 700000) issues.push({ code: 'BALANCE_WARNING_GPU', severity: 'WARNING', message: 'La gráfica queda bastante por detrás del procesador y todavía hay presupuesto; movería más inversión a la GPU.' });
-    const requiredPsu = gpu ? Number(gpu.technicalSpecs.recommendedPsuWatts ?? 0) : 0;
-    if (psu && requiredPsu && Number(psu.technicalSpecs.wattage ?? 0) >= requiredPsu + 350) issues.push({ code: 'BALANCE_WARNING_PSU', severity: 'WARNING', message: 'La fuente está muy sobredimensionada; puedes ahorrar sin perder el margen recomendado para la GPU.' });
+    const requiredPsu = gpu ? Number(gpu.technicalSpecs.recommendedPsuWatts ?? 0) || 450 : 450;
+    if (psu && requiredPsu && Number(psu.technicalSpecs.wattage ?? 0) > requiredPsu + 300) issues.push({ code: 'BALANCE_WARNING_PSU', severity: 'WARNING', message: 'La fuente está muy sobredimensionada; puedes ahorrar sin perder el margen recomendado para la GPU.' });
+    if (preferences?.wifiRequired && products.some((item) => item.type === ProductType.MOTHERBOARD && item.technicalSpecs.wifi !== true)) issues.push({ code: 'BALANCE_WARNING_WIFI', severity: 'WARNING', message: 'La motherboard seleccionada no acredita Wi-Fi integrado, aunque lo marcaste como requisito.' });
     if (cooling && cpu && cooling.price > cpu.price * 0.75 && (cpu.cpuScore ?? 0) < 85) issues.push({ code: 'BALANCE_WARNING_COOLING', severity: 'WARNING', message: 'La refrigeración consume demasiado presupuesto para este procesador; priorizaría rendimiento o memoria.' });
     const missingPerformance = !gpu || !ram || !products.some((item) => item.type === ProductType.STORAGE);
     if (pcCase && missingPerformance && pcCase.price >= 600000) issues.push({ code: 'BALANCE_WARNING_CASE', severity: 'WARNING', message: 'El chasis es costoso mientras faltan piezas de rendimiento; reservaría ese dinero para la build.' });
