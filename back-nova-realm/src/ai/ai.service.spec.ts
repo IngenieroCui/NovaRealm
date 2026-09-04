@@ -1,5 +1,6 @@
 import { AiService, InterpretedIntent } from './ai.service';
 import { Workload } from '../workloads/workload.types';
+import { ConversationStage, ShoppingIntent } from '../assistant/assistant.dto';
 
 const officeWorkload = {
   slug: 'ofimatica-basica',
@@ -7,7 +8,14 @@ const officeWorkload = {
 } as Workload;
 
 describe('AiService', () => {
-  const service = new AiService({} as any, {} as any);
+  const ollama = { complete: jest.fn() };
+  const cloudflare = { complete: jest.fn() };
+  const service = new AiService(ollama as any, cloudflare as any);
+
+  beforeEach(() => {
+    process.env.AI_PROVIDER = 'ollama';
+    jest.clearAllMocks();
+  });
 
   it('prioriza ofimática cuando el usuario menciona Excel y Word', () => {
     const intent: InterpretedIntent = {
@@ -111,5 +119,65 @@ describe('AiService', () => {
     };
     expect((service as any).sanitizeExplicitPreferences('Solo uso Wi-Fi y Docker; no quiero gastar porque sí.', turn).extracted.preferences).toEqual({ wifiRequired: true, valuePriority: true, multitaskingLevel: 'HEAVY' });
     expect((service as any).sanitizeExplicitPreferences('Quiero un computador.', turn).extracted.preferences).toBeUndefined();
+  });
+
+  it('rejects a discovery reply that asks for budget while awaiting USE', async () => {
+    ollama.complete
+      .mockResolvedValueOnce(JSON.stringify({ nextQuestionPurpose: 'USE', reply: '¿Cuál es tu presupuesto y para qué usarás el PC?' }))
+      .mockResolvedValueOnce(JSON.stringify({ nextQuestionPurpose: 'USE', reply: '¿Para qué usarás principalmente el PC? Cuéntame tus juegos o programas habituales.' }));
+
+    await expect(service.composeConversationReply({
+      userMessage: 'Quiero armar una PC.',
+      shoppingIntent: ShoppingIntent.CUSTOM_PC,
+      criteria: {},
+      stage: ConversationStage.DISCOVER_USE,
+      awaiting: 'USE',
+    })).resolves.toContain('¿Para qué usarás');
+    expect(ollama.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects placeholder products from conversation replies', async () => {
+    ollama.complete
+      .mockResolvedValueOnce(JSON.stringify({ nextQuestionPurpose: 'BUILDER_MODE', reply: 'Recomiendo [Nombre del Kit] y [Alternativa] para tu configuración.' }))
+      .mockResolvedValueOnce(JSON.stringify({ nextQuestionPurpose: 'BUILDER_MODE', reply: '¿Quieres armar la PC pieza por pieza o prefieres recibir una configuración completa?' }));
+
+    await expect(service.composeConversationReply({
+      userMessage: 'Quiero armarla.',
+      shoppingIntent: ShoppingIntent.CUSTOM_PC,
+      criteria: {},
+      stage: ConversationStage.BUILDER_MODE,
+      awaiting: 'BUILDER_MODE',
+    })).resolves.toContain('¿Quieres armar');
+    expect(ollama.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws when both conversation attempts contain placeholders', async () => {
+    ollama.complete.mockResolvedValue(JSON.stringify({ nextQuestionPurpose: 'BUILDER_MODE', reply: 'Recomiendo [Nombre del Kit] para tu configuración.' }));
+
+    await expect(service.composeConversationReply({
+      userMessage: 'Quiero armarla.',
+      shoppingIntent: ShoppingIntent.CUSTOM_PC,
+      criteria: {},
+      stage: ConversationStage.BUILDER_MODE,
+      awaiting: 'BUILDER_MODE',
+    })).rejects.toThrow('respuesta coherente');
+    expect(ollama.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('includes Nova personality in builder-step introductions', async () => {
+    ollama.complete.mockResolvedValue('Yo elegiría esta opción para tu uso.');
+
+    await service.explainBuilderStep({
+      criteria: { useProfile: 'OFFICE' },
+      currentStep: 'CPU',
+      build: [],
+      alternatives: [],
+    });
+
+    const messages = ollama.complete.mock.calls[0][0] as Array<{ role: string; content: string }>;
+    const system = messages.find((message) => message.role === 'system')?.content ?? '';
+    expect(system).toContain('Eres Nova, asesora tecnológica de NovaRealm.');
+    expect(system).toContain('You are introducing one step of the guided PC builder.');
+    expect(system).toContain('Speak as Nova, not as a technical report.');
   });
 });

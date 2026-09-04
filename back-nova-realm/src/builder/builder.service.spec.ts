@@ -46,6 +46,22 @@ describe('BuilderService critical actions', () => {
     expect(result.summary.products.map((item) => item.slug)).toContain('cpu');
   });
 
+  it('AUTO_SELECT uses the edited component type and resumes normal flow', async () => {
+    const recommendComponents = jest.spyOn(service, 'recommendComponents').mockResolvedValue({ componentType: ProductType.CPU, recommendations: [cpu], warnings: [] });
+
+    const result = await service.applyAction({
+      action: 'AUTO_SELECT',
+      currentSlugs: ['cpu', 'board', 'ram'],
+      componentType: ProductType.CPU,
+      budgetMax: 5000000,
+      mode: 'GUIDED',
+    });
+
+    expect(recommendComponents).toHaveBeenCalledWith(expect.objectContaining({ componentType: ProductType.CPU }));
+    expect(result.flow.currentStep).toBe(ProductType.GPU);
+    expect(result.flow.editingStep).toBeUndefined();
+  });
+
   it('never exceeds the budget when the catalog can complete the build', async () => {
     const result = await service.autoBuild({ budgetMax: 5000000 });
     expect(result.complete).toBe(true);
@@ -132,6 +148,60 @@ describe('BuilderService recommendation correctness', () => {
     const blenderSteps = await (service as any).resolveGuidedSteps([cpu], [{ slug: blender.slug, importance: 1 }]);
     expect(officeSteps).not.toContain(ProductType.GPU);
     expect(blenderSteps).toContain(ProductType.GPU);
+  });
+
+  it('AUTO office chooses the cheaper complete iGPU path', async () => {
+    const i3 = product(ProductType.CPU, 'i3-12100f', 399000, { socket: 'AM4', integratedGraphics: false });
+    const ryzen = product(ProductType.CPU, 'ryzen-5600g', 499000, { socket: 'AM4', integratedGraphics: true });
+    const board = product(ProductType.MOTHERBOARD, 'office-board', 350000, { socket: 'AM4', memoryType: 'DDR4' });
+    const ram = { ...product(ProductType.RAM, 'office-ram', 200000, { memoryType: 'DDR4' }), ramGb: 16 };
+    const gpu = product(ProductType.GPU, 'minimum-gpu', 899000, { tdpW: 160 });
+    const storage = product(ProductType.STORAGE, 'office-storage', 200000);
+    const psu = product(ProductType.PSU, 'office-psu', 300000, { wattage: 650 });
+    const cooling = product(ProductType.COOLING, 'office-cooling', 150000);
+    const pcCase = product(ProductType.CASE, 'office-case', 250000);
+    const office = workload('ofimatica-basica', 'PROFESSIONAL', 16);
+    const service = createService([i3, ryzen, board, ram, gpu, storage, psu, cooling, pcCase], [office]);
+
+    const result = await service.autoBuild({ budgetMax: 5000000, workloadSlugs: [office.slug] });
+
+    expect(result.components.find((item) => item.type === ProductType.CPU)?.slug).toBe('ryzen-5600g');
+    expect(result.components.some((item) => item.type === ProductType.GPU)).toBe(false);
+  });
+
+  it('AUTO gaming still includes a discrete GPU', async () => {
+    const i3 = product(ProductType.CPU, 'i3-12100f', 399000, { socket: 'AM4', integratedGraphics: false });
+    const ryzen = product(ProductType.CPU, 'ryzen-5600g', 499000, { socket: 'AM4', integratedGraphics: true });
+    const board = product(ProductType.MOTHERBOARD, 'gaming-board', 350000, { socket: 'AM4', memoryType: 'DDR4' });
+    const ram = { ...product(ProductType.RAM, 'gaming-ram', 200000, { memoryType: 'DDR4' }), ramGb: 16 };
+    const gpu = product(ProductType.GPU, 'gaming-gpu', 899000, { tdpW: 160 });
+    const storage = product(ProductType.STORAGE, 'gaming-storage', 200000);
+    const psu = product(ProductType.PSU, 'gaming-psu', 300000, { wattage: 650 });
+    const cooling = product(ProductType.COOLING, 'gaming-cooling', 150000);
+    const pcCase = product(ProductType.CASE, 'gaming-case', 250000);
+    const gaming = workload('valorant', 'GAME', 16);
+    const service = createService([i3, ryzen, board, ram, gpu, storage, psu, cooling, pcCase], [gaming]);
+
+    const result = await service.autoBuild({ budgetMax: 5000000, workloadSlugs: [gaming.slug] });
+
+    expect(result.components.some((item) => item.type === ProductType.GPU)).toBe(true);
+  });
+
+  it('AUTO Blender still includes a discrete GPU', async () => {
+    const cpu = product(ProductType.CPU, 'blender-cpu', 399000, { socket: 'AM4', integratedGraphics: true });
+    const board = product(ProductType.MOTHERBOARD, 'blender-board', 350000, { socket: 'AM4', memoryType: 'DDR4' });
+    const ram = { ...product(ProductType.RAM, 'blender-ram', 200000, { memoryType: 'DDR4' }), ramGb: 32 };
+    const gpu = product(ProductType.GPU, 'blender-gpu', 899000, { tdpW: 160 });
+    const storage = product(ProductType.STORAGE, 'blender-storage', 200000);
+    const psu = product(ProductType.PSU, 'blender-psu', 300000, { wattage: 650 });
+    const cooling = product(ProductType.COOLING, 'blender-cooling', 150000);
+    const pcCase = product(ProductType.CASE, 'blender-case', 250000);
+    const blender = workload('blender', 'CREATIVE', 32);
+    const service = createService([cpu, board, ram, gpu, storage, psu, cooling, pcCase], [blender]);
+
+    const result = await service.autoBuild({ budgetMax: 5000000, workloadSlugs: [blender.slug] });
+
+    expect(result.components.some((item) => item.type === ProductType.GPU)).toBe(true);
   });
 
   it('GO_TO_STEP preserves the build and returns the requested editing step', async () => {

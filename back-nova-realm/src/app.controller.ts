@@ -11,6 +11,12 @@ export class AppController {
       name: 'NovaRealm API',
       status: 'ok',
       timestamp: new Date().toISOString(),
+      build: {
+        commit:
+          process.env.VERCEL_GIT_COMMIT_SHA
+            ?.slice(0, 12) ??
+          'local',
+      },
     };
   }
 }

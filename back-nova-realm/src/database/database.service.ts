@@ -7,7 +7,7 @@ import {
   WORKLOAD_SEEDS,
 } from './seed-data';
 
-const CURRENT_SEED_PROFILE_VERSION = 2;
+const CURRENT_SEED_PROFILE_VERSION = 3;
 
 export interface RunResult {
   lastInsertRowid?: bigint;

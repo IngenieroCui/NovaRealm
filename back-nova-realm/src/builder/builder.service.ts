@@ -198,9 +198,26 @@ export class BuilderService {
     }
     let effectiveAction = input.action;
     if (input.action === 'AUTO_SELECT') {
-      const currentStep = (await this.flow(current, 'GUIDED', input.workloads)).currentStep;
-      if (!COMPONENT_TYPES.includes(currentStep as ProductType)) throw new BadRequestException('La configuración ya no tiene un componente pendiente.');
-      const result = await this.recommendComponents({ componentType: currentStep as ProductType, itemSlugs: current, budgetMax: input.budgetMax, assemblySelected, workloads: input.workloads, preferences: input.preferences, preference: input.preference });
+      const autoSelectStep =
+        input.componentType &&
+        COMPONENT_TYPES.includes(input.componentType)
+          ? input.componentType
+          : (
+              await this.flow(
+                current,
+                input.mode ?? 'GUIDED',
+                input.workloads,
+              )
+            ).currentStep;
+      if (
+        autoSelectStep === 'DONE' ||
+        !COMPONENT_TYPES.includes(autoSelectStep as ProductType)
+      ) {
+        throw new BadRequestException(
+          'No hay un componente pendiente para seleccionar.',
+        );
+      }
+      const result = await this.recommendComponents({ componentType: autoSelectStep as ProductType, itemSlugs: current, budgetMax: input.budgetMax, assemblySelected, workloads: input.workloads, preferences: input.preferences, preference: input.preference });
       target = result.recommendations.find((item) => item.recommendedRole === 'RECOMMENDED') ?? result.recommendations[0];
       effectiveAction = 'ADD_TO_BUILD';
     }
@@ -293,6 +310,24 @@ export class BuilderService {
     return workloads.some(({ workload }) => workload.type === 'GAME' || workload.type === 'CREATIVE' || workload.type === 'AI' || workload.slug === 'unity' || workload.slug === 'unreal-engine');
   }
 
+  private async selectAutoCpu(
+    workloads: Array<{ workload: Workload; importance: number }>,
+  ): Promise<Product | undefined> {
+    const cpus = (await this.catalog.findAll({ type: ProductType.CPU, inStock: true }))
+      .filter((product) => product.active)
+      .sort((a, b) => a.price - b.price);
+
+    if (!cpus.length) return undefined;
+    if (this.workloadRequiresDiscreteGpu(workloads)) return cpus[0];
+
+    const minimumGpuPrice = await this.minimumDiscreteGpuPrice();
+    return [...cpus].sort((a, b) => {
+      const aEffective = a.price + (a.technicalSpecs.integratedGraphics === true ? 0 : minimumGpuPrice);
+      const bEffective = b.price + (b.technicalSpecs.integratedGraphics === true ? 0 : minimumGpuPrice);
+      return aEffective - bEffective || (b.cpuScore ?? 0) - (a.cpuScore ?? 0);
+    })[0];
+  }
+
   private cpuEffectivePrice(product: Product, minimumGpuPrice: number): number {
     return product.price + (product.technicalSpecs.integratedGraphics === true ? 0 : minimumGpuPrice);
   }
@@ -324,9 +359,9 @@ export class BuilderService {
     const cheapest = (type: ProductType, predicate: (product: Product) => boolean = () => true) => products
       .filter((product) => product.type === type && predicate(product))
       .sort((a, b) => a.price - b.price)[0];
-    const cpu = cheapest(ProductType.CPU);
+    const cpu = await this.selectAutoCpu(workloads);
     const board = cpu ? cheapest(ProductType.MOTHERBOARD, (product) => this.isUsable(product, [cpu])) : undefined;
-    const ram = board ? cheapest(ProductType.RAM, (product) => this.isUsable(product, [cpu, board])) : undefined;
+    const ram = board && cpu ? cheapest(ProductType.RAM, (product) => this.isUsable(product, [cpu, board])) : undefined;
     const core = [cpu, board, ram].filter((product): product is Product => Boolean(product));
     const guidedSteps = await this.resolveGuidedSteps(core, workloads.map(({ workload, importance }) => ({ slug: workload.slug, importance })));
     const gpu = guidedSteps.includes(ProductType.GPU) ? cheapest(ProductType.GPU, (product) => this.isUsable(product, core)) : undefined;

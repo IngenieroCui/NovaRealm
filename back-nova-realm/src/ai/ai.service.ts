@@ -276,7 +276,7 @@ reply debe sonar natural, reconocer lo ya dicho y tener normalmente 30-80 palabr
       remainingBudget: context.remainingBudget,
       currentStep: context.currentStep,
       currentBuild: context.currentBuild.map((item) => ({ type: item.type, name: item.name, slug: item.slug, priceCop: this.formatCop(item.price), technicalSpecs: item.technicalSpecs })),
-      candidates: context.candidates.map((item) => ({ name: item.name, slug: item.slug, priceCop: this.formatCop(item.price), technicalSpecs: item.technicalSpecs, compatibility: item.compatibility, compatibilityReasons: item.compatibilityReasons, recommendationScore: item.recommendationScore, budgetImpact: item.budgetImpact, recommendedRole: item.recommendedRole, strengths: item.strengths, weaknesses: item.weaknesses })),
+      candidates: context.candidates.map((item) => ({ name: item.name, slug: item.slug, priceCop: this.formatCop(item.price), technicalSpecs: item.technicalSpecs, compatibility: item.compatibility, compatibilityReasons: item.compatibilityReasons, recommendationScore: item.recommendationScore, budgetImpact: item.budgetImpact, recommendedRole: item.recommendedRole, strengths: item.strengths, weaknesses: item.weaknesses, rationale: item.rationale })),
       lastRecommendedProductSlug: context.lastRecommendedProductSlug,
       lastComparedProductSlugs: context.lastComparedProductSlugs,
       balanceWarnings: context.balanceWarnings ?? [],
@@ -284,7 +284,7 @@ reply debe sonar natural, reconocer lo ya dicho y tener normalmente 30-80 palabr
       useProfile: context.useProfile,
     };
     return this.call('builder-answer', [
-      { role: 'system', content: `${NOVA_PERSONALITY}\nEstás acompañando un PC builder que NO debe avanzar por responder una pregunta. Responde la pregunta en 30-80 palabras y toma postura cuando los datos lo permitan. Usa exclusivamente el JSON verificado. El backend ya decidió compatibilidad y roles: jamás los recalcules ni contradigas. No repitas las cards. Si faltan datos, dilo claramente. Puedes usar markdown seguro.` },
+      { role: 'system', content: `${NOVA_PERSONALITY}\nEstás respondiendo una pregunta DENTRO de un configurador guiado de PC.\n\nNunca recomiendes una PC prearmada completa.\n\nNunca cambies la intención de compra.\n\nNunca avances el configurador.\n\nPrimero responde exactamente la pregunta.\n\nSi la pregunta es "¿Por qué esta?" o equivalente:\n- identifica el candidato referido por lastRecommendedProductSlug;\n- explica 2 razones concretas de los datos del backend;\n- conecta al menos una razón con el uso, presupuesto o configuración actual;\n- menciona un trade-off si existe.\n\nSi pide una comparación, compara como máximo dos candidatos relevantes.\n\nSi pregunta si puede ahorrar, explica qué perdería y si la alternativa más barata todavía cubre la necesidad.\n\nUsa 40-110 palabras en español. Sé amable y práctico. No suenes como un informe técnico. Usa exclusivamente el JSON verificado. El backend ya decidió compatibilidad y roles: jamás los recalcules ni contradigas. No repitas las cards. Si faltan datos, dilo claramente. Puedes usar markdown seguro.` },
       { role: 'user', content: `Pregunta: ${question}\nContexto verificado: ${JSON.stringify(verified)}` },
     ]);
   }
@@ -296,6 +296,34 @@ reply debe sonar natural, reconocer lo ya dicho y tener normalmente 30-80 palabr
     ]);
   }
 
+  async explainBuilderStep(input: {
+    criteria: ConversationCriteriaDto;
+    currentStep: ProductType;
+    build: Product[];
+    remainingBudget?: number | null;
+    recommendedCandidate?: ComponentCandidate;
+    alternatives: ComponentCandidate[];
+  }): Promise<string> {
+    const raw = await this.call('builder-step-intro', [
+      {
+        role: 'system',
+        content: `${NOVA_PERSONALITY}\n\nYou are introducing one step of the guided PC builder.\n\nUse only verified data.\n\nName the recommended component if one exists.\n\nExplain:\n1. why this type of component matters for this customer's use;\n2. why the backend-recommended candidate makes sense;\n3. one practical trade-off when relevant.\n\nConnect the explanation to something the customer told Nova:\ngaming target, Blender, Docker, office use, Wi-Fi, budget or value priority.\n\nSpeak as Nova, not as a technical report.\n\nConnect the recommendation to at least one piece of customer context when\nthat context exists:\n\n- their programs;\n- their games;\n- resolution/FPS target;\n- Wi-Fi requirement;\n- multitasking;\n- budget;\n- value priority;\n- selected components.\n\nUse one practical example when it genuinely clarifies the decision.\n\nExample style:\n\"For Blender I would spend a little more here because this part directly\naffects the work you told me you do.\"\n\"Since you only use Wi-Fi, this is one of the places where paying the\ndifference makes sense.\"\n\nDo not say:\n\"According to the criteria\"\n\"Based on your requirements\"\n\"The recommended product is\"\n\nDo not invent customer statistics or benchmarks.\n\nDo not enumerate every candidate.\nDo not recommend a complete prebuilt PC.\nDo not change shopping flow.\nDo not ask a discovery question.\n\nUse 45-100 words in Spanish, maximum two short paragraphs.`,
+      },
+      {
+        role: 'user',
+        content: `Datos verificados:\n${JSON.stringify({
+          criteria: input.criteria,
+          currentStep: input.currentStep,
+          build: input.build,
+          remainingBudget: input.remainingBudget,
+          recommendedCandidate: input.recommendedCandidate,
+          alternatives: input.alternatives,
+        })}`,
+      },
+    ]);
+    return raw.trim().slice(0, 1000);
+  }
+
   async composeConversationReply(input: {
     userMessage: string;
     shoppingIntent: ShoppingIntent;
@@ -305,10 +333,30 @@ reply debe sonar natural, reconocer lo ya dicho y tener normalmente 30-80 palabr
     verified?: unknown;
   }) {
     const expected = input.awaiting ?? 'NONE';
+    const awaitingInstruction: Record<string, string> = {
+      INTENT:
+        'Pregunta únicamente qué quiere comprar o mejorar. No preguntes presupuesto ni uso todavía.',
+      USE:
+        'Pregunta únicamente para qué usará el PC o qué juegos/programas usará. NO preguntes presupuesto.',
+      CONNECTIVITY:
+        'Pregunta únicamente si necesita Wi-Fi o puede usar Ethernet.',
+      GAMING_TARGET:
+        'Pregunta únicamente por resolución y objetivo de FPS/Hz. NO preguntes presupuesto.',
+      DEVELOPMENT_LOAD:
+        'Pregunta únicamente si su programación es básica, usa Docker o máquinas virtuales.',
+      BUDGET:
+        'Pregunta únicamente por el presupuesto máximo. NO vuelvas a preguntar el uso.',
+      BUILDER_MODE:
+        'No recomiendes ningún producto ni especificación. Solo pregunta si quiere hacerlo pieza por pieza o recibir una configuración completa.',
+      COMPONENT_SELECTION:
+        'Pregunta únicamente qué tipo de componente está buscando.',
+      PERIPHERALS:
+        'Pregunta únicamente qué periféricos necesita.',
+    };
     const system = `${NOVA_PERSONALITY}
 Redacta el siguiente mensaje real de Nova usando el estado decidido por el backend. Devuelve SOLO JSON:
 {"nextQuestionPurpose":"${expected}","reply":"mensaje"}
-nextQuestionPurpose debe ser exactamente "${expected}". reply debe tener 30-80 palabras, sin listas. No preguntes por datos que ya aparecen en criteria. Si awaiting es NONE, responde o recomienda sin convertir el turno en otra pregunta de descubrimiento. Si hay candidatos, toma postura por la opción marcada RECOMMENDED, nómbrala y explica el criterio; menciona como máximo una alternativa. Los botones y cards se renderizan aparte. Todo precio numérico verificado está en COP: escríbelo como "$... COP" y nunca uses ₡, dólares u otra moneda.`;
+nextQuestionPurpose debe ser exactamente "${expected}". reply debe tener 30-80 palabras, sin listas. No preguntes por datos que ya aparecen en criteria. ${awaitingInstruction[expected] ?? ''} ${expected === 'BUILDER_MODE' ? 'At BUILDER_MODE the backend has NOT selected hardware yet. Do not mention a CPU, GPU, RAM amount, SSD, kit, product, model or brand as a recommendation.' : ''} Si awaiting es NONE, responde o recomienda sin convertir el turno en otra pregunta de descubrimiento. Si hay candidatos, toma postura por la opción marcada RECOMMENDED, nómbrala y explica el criterio; menciona como máximo una alternativa. Los botones y cards se renderizan aparte. Todo precio numérico verificado está en COP: escríbelo como "$... COP" y nunca uses ₡, dólares u otra moneda.`;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const raw = await this.call('conversation-reply', [
         { role: 'system', content: system },
@@ -318,11 +366,63 @@ nextQuestionPurpose debe ser exactamente "${expected}". reply debe tener 30-80 p
       const purpose = parsed.nextQuestionPurpose === null ? 'NONE' : String(parsed.nextQuestionPurpose);
       const reply = typeof parsed.reply === 'string' ? parsed.reply.trim() : '';
       const wordCount = reply.split(/\s+/).filter(Boolean).length;
-      const conversational = wordCount >= 12 && wordCount <= 120 && !/(?:^|\n)\s*[-*•]\s/.test(reply) && !reply.includes('₡');
+      const conversational = wordCount >= 12 && wordCount <= 120 && !/(?:^|\n)\s*[-*•]\s/.test(reply) && !reply.includes('₡') && !this.containsPlaceholderProduct(reply) && !this.violatesAwaitingContract(expected, reply);
       if (purpose === expected && reply && conversational) return reply.slice(0, 1000);
       console.warn(`[NovaAI] operation=conversation-reply valid=false expectedPurpose=${expected} attempt=${attempt + 1}`);
     }
     throw new ServiceUnavailableException('Nova no pudo formular una respuesta coherente con el estado actual.');
+  }
+
+  private containsPlaceholderProduct(
+    value: string,
+  ): boolean {
+    return (
+      /\[(?:nombre|producto|alternativa|modelo|kit)[^\]]*\]/i.test(
+        value,
+      ) ||
+      /\bNombre del Kit\b/i.test(value) ||
+      /\bProducto X\b/i.test(value) ||
+      /\bModelo X\b/i.test(value)
+    );
+  }
+
+  private violatesAwaitingContract(
+    awaiting: string,
+    reply: string,
+  ): boolean {
+    if (
+      awaiting === 'USE' &&
+      /presupuesto|\$|millones?|cop/i.test(reply)
+    ) {
+      return true;
+    }
+
+    if (
+      awaiting === 'BUDGET' &&
+      /para qué|para que|qué juegos|que juegos|qué programas|que programas|uso principal/i.test(
+        reply,
+      )
+    ) {
+      return true;
+    }
+
+    if (
+      awaiting === 'GAMING_TARGET' &&
+      /presupuesto|\$|millones?|cop/i.test(reply)
+    ) {
+      return true;
+    }
+
+    if (
+      awaiting === 'BUILDER_MODE' &&
+      /ryzen|intel|rtx|radeon|\b\d+\s*gb\b|ssd|nombre del kit|\bkit\b/i.test(
+        reply,
+      )
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   private async call(operation: string, messages: AiMessage[], json = false) {

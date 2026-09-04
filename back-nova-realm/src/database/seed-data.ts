@@ -1140,6 +1140,14 @@ const wl = (
 
 export const WORKLOAD_SEEDS: WorkloadSeed[] = [
   wl(
+    'gaming-general',
+    'Gaming general',
+    'GAME',
+    [0.30, 0.45, 0.10, 0.05, 0.10],
+    [45, 70, 45, 78, 16, 16, 4, 8],
+    'Perfil general para gaming cuando el usuario todavía no indicó un juego específico.',
+  ),
+  wl(
     'valorant',
     'Valorant',
     'GAME',

@@ -1,26 +1,30 @@
 import { AssistantService } from './assistant.service';
-import { ChatRequestDto, ShoppingIntent } from './assistant.dto';
+import { ChatRequestDto, ShoppingIntent, UseProfile } from './assistant.dto';
 import { DiscoveryPolicyService } from './discovery-policy.service';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 
 describe('AssistantService conversational orchestration', () => {
-  const ai = { chatTurn: jest.fn(), generateGreeting: jest.fn(), explainRecommendations: jest.fn(), explainComparison: jest.fn(), answerWithVerifiedContext: jest.fn(), answerBuilderQuestion: jest.fn(), composeConversationReply: jest.fn() };
-  const workloads = { findAll: jest.fn().mockResolvedValue([{ slug: 'valorant' }, { slug: 'blender' }, { slug: 'programacion' }]) };
+  const ai = { chatTurn: jest.fn(), generateGreeting: jest.fn(), explainRecommendations: jest.fn(), explainComparison: jest.fn(), answerWithVerifiedContext: jest.fn(), answerBuilderQuestion: jest.fn(), explainBuilderStep: jest.fn(), composeConversationReply: jest.fn() };
+  const workloads = { findAll: jest.fn().mockResolvedValue([{ slug: 'gaming-general', type: 'GAME' }, { slug: 'valorant' }, { slug: 'blender' }, { slug: 'programacion' }, { slug: 'ofimatica-basica', type: 'PROFESSIONAL' }]) };
   const recommendations = { recommend: jest.fn() };
   const builder = { recommendComponents: jest.fn(), autoBuild: jest.fn(), applyAction: jest.fn(), summarize: jest.fn(), flow: jest.fn(), analyzeUpgrade: jest.fn() };
   const catalog = { findBySlug: jest.fn() };
-  const service = new AssistantService(ai as never, workloads as never, recommendations as never, builder as never, catalog as never);
+  const discoveryPolicy = { next: jest.fn() };
+  const defaultDiscoveryPolicy = new DiscoveryPolicyService();
+  const service = new AssistantService(ai as never, workloads as never, recommendations as never, builder as never, catalog as never, discoveryPolicy as never);
   const criteria = { budgetMax: 5000000, workloads: [{ slug: 'valorant', importance: 0.5 }, { slug: 'blender', importance: 0.5 }] };
   const emptyBuild = { products: [], components: [], peripherals: [], subtotal: 0, assembly: 0, total: 0, budgetRemaining: 5000000, assemblyEnabled: true, complete: false, warnings: [], compatibilityIssues: [], compatible: true };
   const turn = (overrides: Record<string, unknown> = {}) => ({ shoppingIntent: ShoppingIntent.PREBUILT_PC, intentChanged: false, intentConfidence: 0.9, extracted: {}, missingFields: [], nextQuestionPurpose: null, reply: 'Respuesta de Nova', ...overrides });
 
   beforeEach(() => {
     jest.clearAllMocks();
+    discoveryPolicy.next.mockImplementation(defaultDiscoveryPolicy.next.bind(defaultDiscoveryPolicy));
     ai.chatTurn.mockResolvedValue(turn());
     ai.generateGreeting.mockResolvedValue('Hola, soy Nova. ¿Qué equipo tienes en mente?');
     ai.answerWithVerifiedContext.mockResolvedValue('Explicación contextual de Nova');
     ai.answerBuilderQuestion.mockResolvedValue('Respuesta sobre la pieza sin avanzar.');
+    ai.explainBuilderStep.mockResolvedValue('Nova explica este paso del configurador.');
     ai.composeConversationReply.mockResolvedValue('Pregunta contextual de Nova.');
     ai.explainRecommendations.mockResolvedValue('Nova explica la recomendación.');
     recommendations.recommend.mockResolvedValue({ recommendations: [], scoring: {} });
@@ -76,7 +80,7 @@ describe('AssistantService conversational orchestration', () => {
     builder.applyAction.mockResolvedValue({ action: 'ADD_TO_BUILD', product: cpu, summary: { ...emptyBuild, products: [cpu], components: [cpu] }, flow: { mode: 'GUIDED', currentStep: 'MOTHERBOARD' }, recommendations: [board] });
     const response = await service.action({ builderAction: { action: 'ADD_TO_BUILD', currentSlugs: [], productSlug: 'ryzen-7600' }, criteria });
     expect(builder.applyAction).toHaveBeenCalled();
-    expect(ai.composeConversationReply).toHaveBeenCalledWith(expect.objectContaining({ userMessage: 'ADD_TO_BUILD', verified: expect.objectContaining({ selectedProduct: cpu }) }));
+    expect(ai.explainBuilderStep).toHaveBeenCalledWith(expect.objectContaining({ currentStep: 'MOTHERBOARD' }));
     expect(response.componentRecommendations).toEqual([board]);
   });
 
@@ -122,6 +126,40 @@ describe('AssistantService conversational orchestration', () => {
     expect(ai.generateGreeting).toHaveBeenCalled();
   });
 
+  it('starts an upgrade by asking for current hardware instead of budget', async () => {
+    const response = await service.start({ criteria: {}, context: { shoppingIntent: ShoppingIntent.UPGRADE_PC } });
+
+    expect(response.stage).toBe('UPGRADE');
+    expect(response.awaiting).toBeNull();
+    expect(response.systemInfoGuide).toBeDefined();
+    expect(ai.generateGreeting).not.toHaveBeenCalled();
+    expect(ai.composeConversationReply).toHaveBeenCalledTimes(1);
+    expect(ai.composeConversationReply).toHaveBeenCalledWith(expect.objectContaining({
+      verified: expect.objectContaining({ reason: 'upgrade hardware discovery' }),
+    }));
+    expect(discoveryPolicy.next).not.toHaveBeenCalled();
+  });
+
+  it('starts a component search by asking which component comes first', async () => {
+    const response = await service.start({ criteria: {}, context: { shoppingIntent: ShoppingIntent.COMPONENT } });
+
+    expect(response.stage).toBe('COMPONENT');
+    expect(response.awaiting).toBe('COMPONENT_SELECTION');
+    expect(response.awaiting).not.toBe('BUDGET');
+    expect(ai.composeConversationReply).toHaveBeenCalledTimes(1);
+    expect(discoveryPolicy.next).not.toHaveBeenCalled();
+  });
+
+  it('uses one compose call for normal startup discovery', async () => {
+    discoveryPolicy.next.mockReturnValue({ awaiting: 'USE', stage: 'DISCOVER_USE', reason: 'missing use' });
+
+    const response = await service.start({ criteria: {}, context: { shoppingIntent: ShoppingIntent.CUSTOM_PC } });
+
+    expect(response.awaiting).toBe('USE');
+    expect(ai.generateGreeting).not.toHaveBeenCalled();
+    expect(ai.composeConversationReply).toHaveBeenCalledTimes(1);
+  });
+
   it('passes a verified product to the contextual start greeting', async () => {
     const product = { slug: 'pc-uno', name: 'PC Uno', price: 5_000_000, type: 'PREBUILT_PC', stock: 1 };
     catalog.findBySlug.mockResolvedValue(product);
@@ -136,6 +174,221 @@ describe('AssistantService conversational orchestration', () => {
     expect((service as any).applyQuickReply({ id: 'wifi', label: 'Solo uso Wi-Fi', kind: 'SET_CONNECTIVITY', value: 'WIFI_ONLY' }, previous).criteria.preferences.wifiRequired).toBe(true);
     expect((service as any).applyQuickReply({ id: 'target', label: '1440p · 144 Hz', kind: 'SET_GAMING_TARGET', value: '1440P_144' }, previous).criteria).toMatchObject({ workloads: previous.workloads, budgetMax: 5_000_000, resolution: '1440p', targetFps: 144 });
     expect((service as any).applyQuickReply({ id: 'docker', label: 'Docker y servicios locales', kind: 'SET_DEVELOPMENT_LOAD', value: 'DOCKER' }, previous).criteria).toMatchObject({ workloads: [{ slug: 'programacion', importance: 1 }, { slug: 'docker', importance: 1 }], preferences: { multitaskingLevel: 'HEAVY' } });
+  });
+
+  it('keeps CUSTOM_PC while asking a builder follow-up even if AI hallucinates PREBUILT_PC', async () => {
+    ai.chatTurn.mockResolvedValue(
+      turn({
+        shoppingIntent: ShoppingIntent.PREBUILT_PC,
+        intentChanged: true,
+        intentConfidence: 0.99,
+        extracted: {},
+      }),
+    );
+
+    builder.flow.mockResolvedValue({
+      mode: 'GUIDED',
+      currentStep: 'CPU',
+    });
+
+    builder.summarize.mockResolvedValue(emptyBuild);
+
+    builder.recommendComponents.mockResolvedValue({
+      recommendations: [
+        {
+          slug: 'ryzen-7600',
+          name: 'Ryzen 5 7600',
+          type: 'CPU',
+          recommendedRole: 'RECOMMENDED',
+        },
+      ],
+      warnings: [],
+    });
+
+    await service.chat({
+      message: '¿Por qué esta?',
+      criteria: {
+        budgetMax: 5_000_000,
+        workloads: [{ slug: 'blender', importance: 1 }],
+      },
+      context: {
+        shoppingIntent: ShoppingIntent.CUSTOM_PC,
+        builderMode: 'GUIDED',
+        builderStep: 'CPU',
+        buildSlugs: [],
+      },
+    });
+
+    expect(ai.answerBuilderQuestion).toHaveBeenCalledTimes(1);
+    expect(recommendations.recommend).not.toHaveBeenCalled();
+  });
+
+  it('asks gaming target immediately after selecting the generic Gaming profile', async () => {
+    const response = await service.chat({
+      message: 'SET_USE_PROFILE:GAMING',
+      quickReply: {
+        id: 'use-gaming',
+        label: 'Gaming',
+        kind: 'SET_USE_PROFILE',
+        value: 'GAMING',
+      },
+      context: {
+        shoppingIntent: ShoppingIntent.CUSTOM_PC,
+      },
+    });
+
+    expect(response.criteria.useProfile).toBe('GAMING');
+    expect(response.awaiting).toBe('GAMING_TARGET');
+    expect(
+      response.quickReplies.every(
+        (item: { kind: string }) =>
+          item.kind === 'SET_GAMING_TARGET',
+      ),
+    ).toBe(true);
+  });
+
+  it('uses gaming-general for generic Gaming and removes stale workload slugs', async () => {
+    await expect(
+      (service as any).effectiveWorkloads({ useProfile: UseProfile.GAMING }),
+    ).resolves.toEqual([
+      {
+        slug: 'gaming-general',
+        importance: 1,
+      },
+    ]);
+
+    await expect(
+      (service as any).effectiveWorkloads({
+        useProfile: UseProfile.GAMING,
+        workloads: [{ slug: 'gaming', importance: 1 }],
+      }),
+    ).resolves.toEqual([
+      {
+        slug: 'gaming-general',
+        importance: 1,
+      },
+    ]);
+  });
+
+  it('passes only the backend recommended candidate when guided building starts', async () => {
+    builder.applyAction.mockResolvedValue({
+      summary: emptyBuild,
+      flow: { mode: 'GUIDED', currentStep: 'CPU' },
+      recommendations: [
+        { slug: 'value-cpu', name: 'Value CPU', type: 'CPU', recommendedRole: 'BEST_VALUE' },
+        { slug: 'recommended-cpu', name: 'Recommended CPU', type: 'CPU', recommendedRole: 'RECOMMENDED' },
+      ],
+    });
+
+    await service.chat({
+      message: 'Guiarme paso a paso',
+      criteria: { useProfile: UseProfile.CREATIVE, budgetMax: 5_000_000 },
+      context: { shoppingIntent: ShoppingIntent.CUSTOM_PC, builderMode: 'GUIDED' },
+      quickReply: { id: 'guided', label: 'Guiarme paso a paso', kind: 'SET_BUILDER_MODE', value: 'GUIDED' },
+    });
+
+    expect(ai.explainBuilderStep).toHaveBeenCalledWith(expect.objectContaining({
+      recommendedCandidate: expect.objectContaining({ slug: 'recommended-cpu', recommendedRole: 'RECOMMENDED' }),
+    }));
+  });
+
+  it('sends only gaming-general to AUTO gaming builds', async () => {
+    builder.autoBuild.mockResolvedValue({ ...emptyBuild, products: [] });
+    builder.flow.mockResolvedValue({ mode: 'AUTO', currentStep: 'DONE' });
+
+    await service.chat({
+      message: 'Recomiéndamela completa',
+      criteria: {
+        useProfile: UseProfile.GAMING,
+        resolution: '1440p',
+        targetFps: 144,
+        budgetMax: 7_000_000,
+      },
+      context: { shoppingIntent: ShoppingIntent.CUSTOM_PC },
+      quickReply: {
+        id: 'builder-auto',
+        label: 'Recomiéndamela completa',
+        kind: 'SET_BUILDER_MODE',
+        value: 'AUTO',
+      },
+    });
+
+    expect(builder.autoBuild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        budgetMax: 7_000_000,
+        workloadSlugs: ['gaming-general'],
+      }),
+    );
+  });
+
+  it('keeps a DONE guided build in the guided-builder answer path', async () => {
+    builder.flow.mockResolvedValue({ mode: 'GUIDED', currentStep: 'DONE', completedSteps: [], progress: 100, totalSteps: 8 });
+
+    const response = await service.chat({
+      message: '¿Crees que esta configuración quedó bien?',
+      criteria: { budgetMax: 5_000_000, workloads: [{ slug: 'blender', importance: 1 }] },
+      context: {
+        shoppingIntent: ShoppingIntent.CUSTOM_PC,
+        builderMode: 'GUIDED',
+        builderStep: 'DONE',
+        buildSlugs: ['cpu', 'board', 'ram', 'gpu', 'storage', 'psu', 'cooling', 'case'],
+      },
+    });
+
+    expect(response.stage).toBe('COMPLETE');
+    expect(ai.answerWithVerifiedContext).toHaveBeenCalledWith(
+      'builder-answer',
+      expect.any(String),
+      '¿Crees que esta configuración quedó bien?',
+      expect.anything(),
+    );
+    expect(builder.applyAction).not.toHaveBeenCalled();
+    expect(recommendations.recommend).not.toHaveBeenCalled();
+  });
+
+  it('replaces stale workloads when free text changes the use profile', async () => {
+    ai.chatTurn.mockResolvedValue(turn({
+      extracted: {
+        useProfile: UseProfile.OFFICE,
+        workloads: [{ slug: 'ofimatica-basica', importance: 1 }],
+      },
+    }));
+
+    const response = await service.chat({
+      message: 'En realidad ya no voy a usar Blender. Solo necesito Word y Excel.',
+      criteria: {
+        useProfile: UseProfile.CREATIVE,
+        workloads: [{ slug: 'blender', importance: 1 }],
+        budgetMax: 5_000_000,
+        preferences: { wifiRequired: true },
+        discovery: { connectivityAsked: true },
+      },
+      context: { shoppingIntent: ShoppingIntent.PREBUILT_PC },
+    });
+
+    expect(response.criteria.useProfile).toBe(UseProfile.OFFICE);
+    expect(response.criteria.workloads).toEqual([{ slug: 'ofimatica-basica', importance: 1 }]);
+    expect(response.criteria.workloads).not.toEqual(expect.arrayContaining([{ slug: 'blender', importance: 1 }]));
+  });
+
+  it('stores an empty workload list for a free-text Gaming profile', async () => {
+    ai.chatTurn.mockResolvedValue(turn({
+      extracted: { useProfile: UseProfile.GAMING, workloads: [] },
+    }));
+
+    const response = await service.chat({
+      message: 'Ahora lo usaré para jugar.',
+      criteria: {
+        useProfile: UseProfile.OFFICE,
+        workloads: [{ slug: 'ofimatica-basica', importance: 1 }],
+        budgetMax: 5_000_000,
+      },
+      context: { shoppingIntent: ShoppingIntent.PREBUILT_PC },
+    });
+
+    expect(response.criteria.useProfile).toBe(UseProfile.GAMING);
+    expect(response.criteria.workloads).toEqual([]);
+    await expect((service as any).effectiveWorkloads(response.criteria)).resolves.toEqual([{ slug: 'gaming-general', importance: 1 }]);
   });
 });
 
