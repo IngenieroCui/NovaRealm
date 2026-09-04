@@ -108,12 +108,12 @@ export function HomeHero() {
         >
           <div className="orbit orbit-one" />
           <div className="orbit orbit-two" />
-          <div className="nova-avatar large">✦</div>
+          <div className="nova-avatar large">N</div>
           <div className="chat-preview user-preview">
             Busco algo para jugar y editar video. Tengo 4 millones.
           </div>
           <div className="chat-preview nova-preview">
-            <span className="mini-avatar">✦</span>
+            <span className="mini-avatar">N</span>
             <p>
               <strong>Entendido.</strong> Encontré varias opciones que
               equilibran bien tus dos prioridades.

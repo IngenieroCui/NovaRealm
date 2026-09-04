@@ -142,7 +142,7 @@ export function NovaChat({ compact = false, context, enabled = true }: { compact
     {!compact && <section className="nova-intro"><div className="nova-avatar" aria-hidden="true">N</div><div><span className="eyebrow">ASISTENTE DE COMPRA</span><h1>Hablemos de tu próximo computador.</h1><p>Productos reales y recomendaciones claras para decidir.</p></div></section>}
     <div className={compact ? "nova-chat-inner" : "nova-shell"}>
       <section className="chat-panel">
-        <div className="chat-status"><span><i /> Nova en línea</span><small>Precios, stock y compatibilidad salen del backend.</small></div>
+        <div className="chat-status"><span><i /> Nova</span><small>Precios, stock y compatibilidad salen del catálogo.</small></div>
         <div className="messages" aria-live="polite">
           {messages.map((message) => <div key={message.id} className={`message-row ${message.role}`}>
             {message.role === "assistant" && <div className="mini-avatar" aria-hidden="true">N</div>}
