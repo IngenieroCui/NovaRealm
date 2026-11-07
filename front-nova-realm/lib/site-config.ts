@@ -3,6 +3,7 @@
  * Las variables NEXT_PUBLIC_* pueden sustituir estos valores al desplegar.
  */
 const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME?.trim() ?? "";
+export const isPortfolioDemo = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 
 export const siteConfig = {
   brand: "NovaRealm",
@@ -45,5 +46,7 @@ export function getProductImageSource(imageUrl: string | null | undefined, isPc 
 }
 
 export function getWhatsAppUrl(message = "Hola, quiero información sobre NovaRealm.") {
+  if (isPortfolioDemo) return "#portfolio-demo";
   return `https://wa.me/${siteConfig.contacts.whatsapp}?text=${encodeURIComponent(message)}`;
 }
+

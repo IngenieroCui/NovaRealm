@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
 import { Logo } from "@/components/logo";
-import { getWhatsAppUrl, siteConfig } from "@/lib/site-config";
+import { getWhatsAppUrl, isPortfolioDemo, siteConfig } from "@/lib/site-config";
 import { NovaAssistant } from "@/components/nova-assistant";
 import { NovaProvider } from "@/lib/nova-context";
 
@@ -16,6 +16,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="es">
       <body>
+        {isPortfolioDemo && (
+          <aside id="portfolio-demo" role="note" style={{ padding: "12px 20px", textAlign: "center", background: "#e4f8f5", color: "#123f37" }}>
+            Demostración de portafolio · Datos ficticios · Sin compras ni pagos reales.
+          </aside>
+        )}
         <header className="site-header">
           <div className="shell header-inner">
             <Logo />
@@ -64,3 +69,4 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
+

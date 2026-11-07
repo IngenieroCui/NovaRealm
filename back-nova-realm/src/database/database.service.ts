@@ -1,6 +1,8 @@
 import { createClient, type Client, type InValue } from '@libsql/client';
-import { Injectable, OnModuleInit } from '@nestjs/common';
-import { resolve } from 'node:path';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { mkdir } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   imageForProductType,
   PRODUCT_SEEDS,
@@ -15,18 +17,29 @@ export interface RunResult {
 }
 
 @Injectable()
-export class DatabaseService implements OnModuleInit {
+export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private database!: Client;
 
   async onModuleInit() {
+    const url = this.databaseUrl;
+    if (url.startsWith('file:') && url !== 'file::memory:') {
+      const databasePath = url.startsWith('file://')
+        ? fileURLToPath(url)
+        : resolve(url.slice('file:'.length));
+      await mkdir(dirname(databasePath), { recursive: true });
+    }
     this.database = createClient({
-      url: this.databaseUrl,
+      url,
       ...(process.env.DATABASE_AUTH_TOKEN?.trim()
         ? { authToken: process.env.DATABASE_AUTH_TOKEN.trim() }
         : {}),
     });
     await this.createSchema();
     await this.seed();
+  }
+
+  onModuleDestroy() {
+    this.database?.close();
   }
 
   async all<T>(sql: string, ...params: InValue[]): Promise<T[]> {
@@ -316,3 +329,4 @@ export class DatabaseService implements OnModuleInit {
     );
   }
 }
+
