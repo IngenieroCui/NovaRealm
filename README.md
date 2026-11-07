@@ -99,7 +99,7 @@ Backend (`back-nova-realm/.env`):
 | `ADMIN_API_KEY` | Clave para `/api/admin/*` |
 | `AI_PROVIDER` | `ollama` o `cloudflare` |
 | `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT_MS` | Configuración local de Ollama |
-| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_AI_TOKEN`, `CLOUDFLARE_AI_MODEL`, `CLOUDFLARE_AI_TIMEOUT_MS` | Workers AI |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_AI_TOKEN`, `CLOUDFLARE_AI_MODEL`, `CLOUDFLARE_AI_TIMEOUT_MS` | Workers AI; el token es privado y nunca debe usar prefijo `NEXT_PUBLIC_` |
 | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`, `CLOUDINARY_UPLOAD_FOLDER` | Cargas de imágenes existentes |
 
 Frontend (`front-nova-realm/.env.local`):

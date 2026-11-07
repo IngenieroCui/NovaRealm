@@ -19,6 +19,7 @@ export class OllamaAiProvider implements AiProvider {
   }
 
   async complete(messages: AiMessage[], json = false) {
+    if (!this.model.trim()) throw new ServiceUnavailableException({ code: 'AI_NOT_CONFIGURED', message: 'Nova no está configurada: define OLLAMA_MODEL en el backend.' });
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
@@ -44,8 +45,9 @@ export class OllamaAiProvider implements AiProvider {
       const content = data.message?.content?.trim();
       if (!content) throw new Error('Ollama devolvió una respuesta vacía');
       return content;
-    } catch {
-      throw new ServiceUnavailableException('Nova no está disponible en este momento.');
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException) throw error;
+      throw new ServiceUnavailableException({ code: 'AI_PROVIDER_UNAVAILABLE', message: 'Nova no pudo conectarse con Ollama. Comprueba que Ollama esté activo y vuelve a intentar.' });
     } finally {
       clearTimeout(timeout);
     }

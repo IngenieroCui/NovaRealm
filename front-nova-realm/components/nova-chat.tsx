@@ -24,6 +24,7 @@ export function NovaChat({ compact = false, context, enabled = true }: { compact
   const activeContext = context ?? nova.session;
   const startRequested = useRef(false);
   const revisionRef = useRef(activeContext.chatRevision ?? 0);
+  const requestEpoch = useRef(0);
   const querySent = useRef(false);
   const nextId = useRef(1);
   const requestBusy = useRef(false);
@@ -54,10 +55,14 @@ export function NovaChat({ compact = false, context, enabled = true }: { compact
   const startNova = useCallback(async (force = false) => {
     if (startRequested.current && !force) return;
     startRequested.current = true; requestBusy.current = true; setLoading(true); setRequestError(null);
+    const epoch = requestEpoch.current;
     try {
       const response = await apiFetch<ChatResponse>("/assistant/start", { method: "POST", body: JSON.stringify({ ...(filters ? { criteria: filters } : {}), context: assistantContext(activeContext) }) });
+      if (epoch !== requestEpoch.current) return;
+      if (!isChatResponse(response)) throw new Error("Nova devolvió una respuesta inválida. Intenta nuevamente.");
       appendResponse(response); setStarted(true);
     } catch (reason) {
+      if (epoch !== requestEpoch.current) return;
       setRequestError({ kind: "start", message: reason instanceof Error ? reason.message : "Intenta nuevamente." });
     } finally { requestBusy.current = false; setLoading(false); }
   }, [activeContext, appendResponse, filters]);
@@ -69,10 +74,14 @@ export function NovaChat({ compact = false, context, enabled = true }: { compact
     const history = messages.slice(-8).map(({ role, content }) => ({ role, content }));
     if (showUser) setMessages((current) => [...current.map((message) => hasActionables(message) ? { ...message, actionableConsumed: true } : message), { id: nextId.current++, role: "user", content: displayText.trim() }]);
     setInput(""); setLoading(true);
+    const epoch = requestEpoch.current;
     try {
       const response = await apiFetch<ChatResponse>("/assistant/chat", { method: "POST", body: JSON.stringify({ message: clean, conversation: history, ...(filters ? { criteria: filters } : {}), ...(quickReply ? { quickReply } : {}), ...(activeContext.shoppingIntent ? { shoppingIntent: activeContext.shoppingIntent } : {}), context: assistantContext(activeContext) }) });
+      if (epoch !== requestEpoch.current) return;
+      if (!isChatResponse(response)) throw new Error("Nova devolvió una respuesta inválida. Intenta nuevamente.");
       setSelected([]); appendResponse(response, showUser ? displayText.trim() : undefined);
     } catch (reason) {
+      if (epoch !== requestEpoch.current) return;
       setRequestError({ kind: "chat", message: reason instanceof Error ? reason.message : "Intenta nuevamente.", retryText: clean, retryReply: quickReply });
     } finally { requestBusy.current = false; setLoading(false); }
   }, [activeContext, appendResponse, filters, messages]);
@@ -114,6 +123,7 @@ export function NovaChat({ compact = false, context, enabled = true }: { compact
     }
 
     revisionRef.current = nextRevision;
+    requestEpoch.current += 1;
     setMessages([]);
     setStarted(false);
     setRequestError(null);
@@ -173,6 +183,7 @@ export function NovaChat({ compact = false, context, enabled = true }: { compact
 }
 
 function assistantContext(context: NovaSession) { return { page: typeof window !== "undefined" ? window.location.pathname : undefined, productSlug: context.selectedProduct?.slug, buildSlugs: context.currentBuild, selectedComponentType: context.selectedComponentType, shoppingIntent: context.shoppingIntent, builderMode: context.builderMode, builderStep: context.builderFlow?.currentStep, builderEditingStep: context.builderFlow?.editingStep, assemblySelected: context.assemblySelected, currentPc: context.currentPc, upgradeGoal: context.upgradeGoal, lastRecommendedProductSlug: context.lastRecommendedProductSlug, lastComparedProductSlugs: context.lastComparedProductSlugs, lastBuilderAdviceTopic: context.lastBuilderAdviceTopic, builderPreference: context.builderPreference }; }
+function isChatResponse(value: unknown): value is ChatResponse { return Boolean(value && typeof value === "object" && typeof (value as ChatResponse).message === "string" && Array.isArray((value as ChatResponse).recommendations) && ((value as ChatResponse).componentRecommendations === undefined || Array.isArray((value as ChatResponse).componentRecommendations)) && ((value as ChatResponse).peripheralRecommendations === undefined || Array.isArray((value as ChatResponse).peripheralRecommendations))); }
 function responseMessage(response: ChatResponse, id: number): ChatMessage { return { id, role: "assistant", content: response.message ?? "", recommendations: response.recommendations, componentRecommendations: normalizeComponentCandidates([...(response.componentRecommendations ?? []), ...(response.upgradeRecommendations ?? [])]), peripheralRecommendations: response.peripheralRecommendations ?? [], currentPc: response.currentPc, build: response.build, flow: response.flow, bundleSummary: response.bundleSummary, actions: response.actions, quickReplies: normalizeQuickReplies(response), upgradeAnalysis: response.upgradeAnalysis, systemInfoGuide: response.systemInfoGuide }; }
 function normalizeQuickReplies(response: ChatResponse): QuickReply[] { const structured = Array.isArray(response.quickReplies) ? response.quickReplies.filter((reply) => reply && typeof reply.id === "string" && typeof reply.label === "string") : []; if (structured.length) return structured; return (response.quickActions ?? []).filter((action) => typeof action === "string" && action.trim()).map((action, index) => ({ id: `legacy-${index}-${action}`, label: action, kind: "SEND_MESSAGE", value: action })); }
 function normalizeRationale(value: unknown): CandidateRationale | undefined { if (typeof value === "string" && value.trim()) return { reasons: [value.trim()], tradeoffs: [] }; if (!value || typeof value !== "object") return undefined; const raw = value as { reasons?: unknown; tradeoffs?: unknown }; return { reasons: Array.isArray(raw.reasons) ? raw.reasons.filter((item): item is string => typeof item === "string") : [], tradeoffs: Array.isArray(raw.tradeoffs) ? raw.tradeoffs.filter((item): item is string => typeof item === "string") : [] }; }

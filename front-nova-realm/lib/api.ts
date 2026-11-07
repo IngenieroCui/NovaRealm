@@ -16,6 +16,7 @@ export class ApiError extends Error {
 }
 
 function friendlyApiMessage(status: number, path: string) {
+  if (status === 503 && path.startsWith("/assistant")) return "Nova no está disponible. Revisa la configuración del proveedor de IA y vuelve a intentarlo.";
   if (status === 409) return "Esa pieza no encaja con lo que ya seleccionaste.";
   if (status === 400 && path.includes("/builder/")) return "No pude aplicar ese cambio a la configuración.";
   if (status >= 500) return "Nova tuvo un problema al procesar esto. Intenta nuevamente.";
@@ -43,7 +44,12 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     if (process.env.NODE_ENV === "development") console.error("API response failed", path, response.status, message);
     throw new ApiError(response.status, friendlyApiMessage(response.status, path), message);
   }
-  return response.json() as Promise<T>;
+  try {
+    return (await response.json()) as T;
+  } catch (reason) {
+    if (process.env.NODE_ENV === "development") console.error("API returned invalid JSON", path, reason);
+    throw new ApiError(response.status, "Nova recibió una respuesta inválida. Intenta nuevamente.", reason instanceof Error ? reason.message : String(reason));
+  }
 }
 
 export function formatMoney(value: number) {
