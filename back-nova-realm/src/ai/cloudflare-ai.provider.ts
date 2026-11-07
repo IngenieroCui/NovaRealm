@@ -23,7 +23,7 @@ export class CloudflareAiProvider implements AiProvider {
 
   async complete(messages: AiMessage[], json = false) {
     if (!this.accountId || !this.token || !this.model) {
-      throw new ServiceUnavailableException('Nova no está disponible en este momento.');
+      throw new ServiceUnavailableException({ code: 'AI_NOT_CONFIGURED', message: 'Nova no está configurada: define CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_AI_TOKEN y CLOUDFLARE_AI_MODEL en el backend.' });
     }
 
     const controller = new AbortController();
@@ -66,8 +66,9 @@ export class CloudflareAiProvider implements AiProvider {
       if (typeof content === 'string' && content.trim()) return content.trim();
       if (content && typeof content === 'object') return JSON.stringify(content);
       throw new Error('Cloudflare AI devolvió una respuesta vacía');
-    } catch {
-      throw new ServiceUnavailableException('Nova no está disponible en este momento.');
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException) throw error;
+      throw new ServiceUnavailableException({ code: 'AI_PROVIDER_UNAVAILABLE', message: 'Nova no pudo conectarse con Cloudflare AI. Revisa la configuración y vuelve a intentar.' });
     } finally {
       clearTimeout(timeout);
     }
