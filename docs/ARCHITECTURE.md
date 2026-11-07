@@ -13,7 +13,7 @@ Next.js → API NestJS
            └─ AdminGuard → administración → Cloudinary opcional
 ```
 
-`front-nova-realm` presenta catálogo, configurador y conversación. `back-nova-realm/src/app.module.ts` ensambla módulos por dominio. El backend mantiene la autoridad sobre productos y puntuaciones; el modelo interpreta/explana criterios y resultados, sin convertir una recomendación inventada por el modelo en un producto del catálogo.
+`front-nova-realm` presenta catálogo, configurador y conversación. `back-nova-realm/src/app.module.ts` ensambla módulos por dominio. El backend mantiene la autoridad sobre productos y puntuaciones; el modelo interpreta y explica criterios y resultados, sin convertir una recomendación inventada por el modelo en un producto del catálogo.
 
 El cliente `@libsql/client` admite `DATABASE_URL` remota o archivo local. Sin URL local puede usar `DATABASE_PATH`; en Vercel se exige URL explícita para evitar persistencia en un sistema efímero. La inicialización crea/ajusta el esquema mediante el servicio existente y el seed carga catálogo demo en una base vacía e incorpora workloads ausentes sin sobrescribir los cambios administrativos descritos en el código.
 
